@@ -5,7 +5,7 @@ namespace OC2DIYLevelSorting
     {
         internal const string MethodDescription = "Name or AddedTime (local info* file CreationTimeUtc; levels share their package time).";
         internal const string DirectionDescription = "Ascending or Descending. Equal values use a stable identity tie-break.";
-        internal const string HistoryDescription = "Clicked level identities. A click is recorded without requiring a successful load or completion.";
+        internal const string HistoryDescription = "Most recently clicked level identity; only this level and its package are marked. No successful load or completion is required. The legacy key name is retained.";
         internal static string Text(string english, string chinese)
         {
             return OC2DIYLevel.UIUtils.GetLocalizedText(english, chinese);

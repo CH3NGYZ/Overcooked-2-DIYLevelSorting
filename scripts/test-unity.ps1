@@ -101,8 +101,18 @@ finally {
     $env:OC2_SORTING_TEST_OUTPUT = $previousOutput
     if (Test-Path -LiteralPath $targets[4]) { Copy-Item -LiteralPath $targets[4] -Destination (Join-Path $runDirectory 'bepinex.log') }
     if ($fastMoved) {
-        Move-Item -LiteralPath $fastBackup -Destination $fastPath
-        if ((Get-FileHash -LiteralPath $fastPath).Hash -ne $fastHash) { throw 'FastInit restore hash mismatch.' }
+        if (Test-Path -LiteralPath $fastPath) {
+            if ((Get-FileHash -LiteralPath $fastPath).Hash -ne $fastHash) {
+                # A user or updater may have installed a replacement while the
+                # original DLL was out of the directory. Preserve both versions
+                # and still restore every temporary sorting/config/log change.
+                Write-Warning "FastInit was replaced during the test; keeping the replacement and original backup at $fastBackup"
+            }
+        }
+        else {
+            Move-Item -LiteralPath $fastBackup -Destination $fastPath
+            if ((Get-FileHash -LiteralPath $fastPath).Hash -ne $fastHash) { throw 'FastInit restore hash mismatch.' }
+        }
     }
     foreach ($entry in $manifest) {
         if ($entry.Existed) {

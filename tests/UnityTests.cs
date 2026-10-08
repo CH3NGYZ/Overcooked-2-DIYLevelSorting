@@ -286,11 +286,18 @@ public sealed class UnityTests : BaseUnityPlugin
         yield return null;
         levelButton = levelView.Content.Find("Level_" + clicked.levelName).GetComponent<T17Button>();
         Check(levelButton.transform.Find("DIYSorting_Clicked").gameObject.activeSelf, "Rebuilt level row restores its circle badge");
+        setView.Flush();
+        CheckSingleBadge(levelView, levelButton.transform, "Latest real level after rebuild");
+        CheckSingleBadge(setView, setView.Content.Find("LevelSet_" + chosen.levelSetName), "Latest real package after refresh");
         Check(levels.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Level clear/rebuild restores exactly two dropdowns");
 
         // Append synthetic packages through the exact installed private button entry.
         LevelSetInfoSO duplicateA = Fixture("Same Name", "shared_scene", "fixture-a");
         LevelSetInfoSO duplicateB = Fixture("Same Name", "shared_scene", "fixture-b");
+        LevelInfoSO second = ScriptableObject.CreateInstance<LevelInfoSO>();
+        second.levelName = second.levelNameZH = "Other Level";
+        second.sceneName = "other_scene";
+        duplicateB.levelInfos = new LevelInfoSO[] { duplicateB.levelInfos[0], second };
         business.Add(new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, duplicateA));
         business.Add(new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, duplicateB));
         MethodInfo addSet = AccessTools.Method(typeof(DIYLevelEntryUI), "AddLevelSetButton");
@@ -321,6 +328,32 @@ public sealed class UnityTests : BaseUnityPlugin
         try { failing.OnSubmit(new BaseEventData(levels.CachedEventSystem)); }
         catch (InvalidOperationException) { }
         Check(SortingPlugin.Instance.History.Contains(bId), "A failing original listener still leaves a recorded click");
+        Check(!SortingPlugin.Instance.History.Contains(clickedId) && !SortingPlugin.Instance.History.HasPackage(SortingPlugin.Instance.Metadata.Get(chosen).Identity),
+            "Clicking a different package removes the previous level and package from recent state");
+        levelView.Flush();
+        setView.Flush();
+        CheckSingleBadge(levelView, failing.transform, "Only the latest level remains after switching packages");
+        CheckSingleBadge(setView, bButton.transform, "Only the latest package remains after switching packages");
+        T17Button secondButton = levelView.Content.Find("Level_" + second.levelName).GetComponent<T17Button>();
+        secondButton.OnSubmit(new BaseEventData(levels.CachedEventSystem));
+        string secondId = SortingPlugin.Instance.Metadata.Get(duplicateB).LevelIds[second];
+        Check(SortingPlugin.Instance.History.Contains(secondId) && !SortingPlugin.Instance.History.Contains(bId), "Clicking another level in the same package replaces its green dot");
+        levelView.Flush();
+        setView.Flush();
+        CheckSingleBadge(levelView, secondButton.transform, "Same-package level change has one green dot");
+        CheckSingleBadge(setView, bButton.transform, "Same-package level change keeps one package dot");
+        ConfigFile recentReloaded = new ConfigFile(SortingPlugin.Instance.Config.ConfigFilePath, false);
+        Check(recentReloaded.Bind<string>("History", "ClickedLevels", "", "test").Value == secondId, "Disk persistence contains only the latest clicked level");
+        SortingPlugin.Instance.Config.Reload();
+        yield return null;
+        Check(SortingPlugin.Instance.History.Contains(secondId) && !SortingPlugin.Instance.History.Contains(bId), "Actual plugin config reload restores only the latest level");
+        CheckSingleBadge(levelView, secondButton.transform, "Config reload keeps one level marker");
+        CheckSingleBadge(setView, bButton.transform, "Config reload keeps one package marker");
+        try { failing.OnSubmit(new BaseEventData(levels.CachedEventSystem)); }
+        catch (InvalidOperationException) { }
+        Check(SortingPlugin.Instance.History.Contains(bId) && !SortingPlugin.Instance.History.Contains(secondId), "Revisiting a previously clicked level replaces the more recent marker");
+        levelView.Flush();
+        CheckSingleBadge(levelView, failing.transform, "Revisited level has the unique green dot");
         LevelSetInfoSO updated = Fixture("Updated Name", "shared_scene", "fixture-b-v2");
         GameAccess.BaseUid.SetValue(updated, "fixture-b");
         int updateIndex = business.FindIndex(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateB; });
@@ -343,6 +376,8 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(levels.GetComponent<MenuView>().Content.childCount == 1, "Single-level replacement remains a single visible row");
         Check(levels.GetComponent<MenuView>().Content.GetChild(0).Find("DIYSorting_Clicked").gameObject.activeSelf,
             "Updated package restores the clicked circle without using the changed display name");
+        CheckSingleBadge(levels.GetComponent<MenuView>(), levels.GetComponent<MenuView>().Content.GetChild(0), "Updated level preserves one green dot");
+        CheckSingleBadge(setView, setView.Content.Find("LevelSet_" + updated.levelSetName), "Updated package preserves one green dot");
         business.RemoveAll(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == updated; });
         business.RemoveAll(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateB; });
 
@@ -398,6 +433,8 @@ public sealed class UnityTests : BaseUnityPlugin
         foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot) addSet.Invoke(null, new object[] { pair.Value });
         setView.Flush();
         Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Full clear/rebuild preserves exactly two controls");
+        Check(!Array.Exists(setView.Content.GetComponentsInChildren<Image>(true), delegate(Image badge) { return badge.name == "DIYSorting_Clicked" && badge.gameObject.activeSelf; }),
+            "Removing the latest package does not revive markers on older packages");
         CheckBusinessUnchanged(business, snapshot);
         ConfigFile persisted = new ConfigFile(SortingPlugin.Instance.Config.ConfigFilePath, false);
         Check(persisted.Bind<SortMethod>("Sorting", "Method", SortMethod.AddedTime, "test").Value == SortingPlugin.Instance.Method,
@@ -424,6 +461,18 @@ public sealed class UnityTests : BaseUnityPlugin
         yield return new WaitForSecondsRealtime(0.5f);
         ScreenCapture.CaptureScreenshot(Path.Combine(output, "menus.png"));
         yield return new WaitForSecondsRealtime(0.3f);
+    }
+
+    private void CheckSingleBadge(MenuView view, Transform expectedRow, string message)
+    {
+        int count = 0;
+        foreach (Image badge in view.Content.GetComponentsInChildren<Image>(true))
+        {
+            if (badge.name != "DIYSorting_Clicked" || !badge.gameObject.activeSelf) continue;
+            count++;
+            Check(badge.transform.parent == expectedRow, message + ": marker belongs to the latest row");
+        }
+        Check(count == 1, message + ": exactly one marker in the list");
     }
 
     private static void AssertStableControls(MenuView view, SortingDropdown methodControl, SortingDropdown directionControl, SortMethod method, SortDirection direction)

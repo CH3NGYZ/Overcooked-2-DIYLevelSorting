@@ -77,32 +77,35 @@ namespace OC2DIYLevelSorting
 
     internal sealed class ClickHistory
     {
-        private readonly HashSet<string> levels = new HashSet<string>(StringComparer.Ordinal);
-        private readonly HashSet<string> packages = new HashSet<string>(StringComparer.Ordinal);
+        private string lastLevel = string.Empty;
+        private string lastPackage = string.Empty;
 
         internal ClickHistory(string saved)
         {
+            string candidate = null;
             foreach (string item in (saved ?? string.Empty).Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
-                Add(item);
+            {
+                // Older versions saved an identity-sorted set, not click order.
+                // A single distinct legacy identity can be restored; several
+                // identities cannot tell us which click was most recent.
+                if (candidate != null && !string.Equals(candidate, item, StringComparison.Ordinal)) return;
+                candidate = item;
+            }
+            Add(candidate);
         }
 
         internal bool Add(string id)
         {
-            if (string.IsNullOrEmpty(id) || !levels.Add(id)) return false;
+            if (string.IsNullOrEmpty(id) || string.Equals(lastLevel, id, StringComparison.Ordinal)) return false;
+            lastLevel = id;
             int separator = id.IndexOf('.');
-            if (separator > 0) packages.Add(id.Substring(0, separator));
+            lastPackage = separator > 0 ? id.Substring(0, separator) : string.Empty;
             return true;
         }
 
-        internal bool Contains(string id) { return levels.Contains(id); }
-        internal bool HasPackage(string id) { return packages.Contains(id); }
-        internal string Save()
-        {
-            string[] sorted = new string[levels.Count];
-            levels.CopyTo(sorted);
-            Array.Sort(sorted, StringComparer.Ordinal);
-            return string.Join(";", sorted);
-        }
+        internal bool Contains(string id) { return lastLevel.Length != 0 && string.Equals(lastLevel, id, StringComparison.Ordinal); }
+        internal bool HasPackage(string id) { return lastPackage.Length != 0 && string.Equals(lastPackage, id, StringComparison.Ordinal); }
+        internal string Save() { return lastLevel; }
     }
 
     internal sealed class RefreshGate

@@ -29,6 +29,8 @@ public sealed class UnityTests : BaseUnityPlugin
     private Harmony harmony;
     private static bool forceEnglish;
     private bool kitchenReturn;
+    private bool roundEnd;
+    private static bool allowSaveDialog;
     private static string saveRoot;
     private static readonly Dictionary<string, string> saveHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, string> sandboxSaves = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -44,7 +46,15 @@ public sealed class UnityTests : BaseUnityPlugin
         mouseDelta.SetValue(input, 0f);
     }
     private static void FrontendMouseDisabled(FrontendRootMenu __instance) { DisablePhysicalMouse(__instance.CachedEventSystem); }
-    private static bool ObserveScene(string __0) { selectedScene = __0; return false; }
+    private static bool ObserveScene(string __0)
+    {
+        selectedScene = __0;
+        return allowSaveDialog;
+    }
+    private static void ShortenResults(FlowroutineData __0)
+    {
+        AccessTools.Field(typeof(ScoreScreenFlowroutineData), "m_fTimeout").SetValue(__0, 1f);
+    }
     private static bool OverrideLanguage(ref SupportedLanguages __result)
     {
         if (!forceEnglish) return true;
@@ -58,6 +68,7 @@ public sealed class UnityTests : BaseUnityPlugin
         string[] args = Environment.GetCommandLineArgs();
         for (int i = 0; i + 1 < args.Length; i++) if (args[i] == "-oc2SortingTestOutput") output = args[i + 1];
         kitchenReturn = Array.IndexOf(args, "-oc2SortingTestKitchenReturn") >= 0;
+        roundEnd = Array.IndexOf(args, "-oc2SortingTestRoundEnd") >= 0;
         if (string.IsNullOrEmpty(output)) { enabled = false; return; }
         harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
         saveRoot = Path.Combine(output, "sandbox-saves");
@@ -68,6 +79,8 @@ public sealed class UnityTests : BaseUnityPlugin
         harmony.Patch(AccessTools.Method(typeof(DIYLevelSaveManager), "GetFileAddress"), null, isolateSaves);
         harmony.Patch(AccessTools.Method(typeof(FrontendRootMenu), "Show"), null,
             new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "FrontendMouseDisabled")));
+        if (roundEnd) harmony.Patch(AccessTools.Method(typeof(ScoreScreenOutroFlowroutine), "Setup"), null,
+            new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "ShortenResults")));
         StartCoroutine(RunProtected());
     }
 
@@ -132,6 +145,33 @@ public sealed class UnityTests : BaseUnityPlugin
         if (!DIYLevelAssetBundleManager.IsInitialized) DIYLevelAssetBundleManager.Initialize();
         Type fast = AccessTools.TypeByName("DIYLevelFastInit.FastInitPlugin");
         FieldInfo loading = fast == null ? null : AccessTools.Field(fast, "Loading");
+        if (roundEnd)
+        {
+            while (loading != null && (bool)loading.GetValue(null) && Time.realtimeSinceStartup < deadline) yield return null;
+            yield return new WaitForSecondsRealtime(2f);
+            AcknowledgeUpdateCheckError();
+            DIYLevelEntryUI.AddUI();
+            GamepadUser roundUser = GameUtils.RequireManager<PlayerManager>().GetUser(EngagementSlot.One);
+            Check(roundUser != null, "Round-end test has a real engaged player");
+            FrontendRootMenu roundRoot = rootObject.GetComponent<FrontendRootMenu>();
+            T17EventSystem roundSystem = T17EventSystemsManager.Instance.GetEventSystemForGamepadUser(roundUser);
+            while ((roundSystem.IsDisabled() || T17DialogBoxManager.HasAnyOpenDialogs()) && Time.realtimeSinceStartup < deadline)
+            {
+                AcknowledgeUpdateCheckError();
+                yield return null;
+            }
+            AccessTools.Field(typeof(BaseMenuBehaviour), "m_CurrentGamepadUser").SetValue(roundRoot, roundUser);
+            SortingPlugin.Instance.Config.Bind<bool>("Navigation", "ReturnToLevelList", true, "test").Value = true;
+            harmony.Patch(AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSelected"),
+                new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "ObserveScene")));
+            LevelSetInfoSO roundSet = DIYLevelAssetBundleManager.levelSetInfos.Find(delegate(KeyValuePair<string, LevelSetInfoSO> item)
+            {
+                return string.Equals(new DirectoryInfo(item.Key).Name, "littleHa", StringComparison.OrdinalIgnoreCase);
+            }).Value ?? DIYLevelAssetBundleManager.levelSetInfos[0].Value;
+            IEnumerator roundWork = VerifyRoundEnd(roundSet);
+            while (roundWork.MoveNext()) yield return roundWork.Current;
+            yield break;
+        }
         int observedLoaded = -1;
         bool switchedWhileLoading = false;
         int stableLoadingFrames = 0;
@@ -264,18 +304,24 @@ public sealed class UnityTests : BaseUnityPlugin
         // Selection still runs through the real T17EventSystem and original UI handlers.
         DisablePhysicalMouse(eventSystem);
         yield return new WaitForSecondsRealtime(0.1f);
-        GameObject firstRow = setView.Content.GetChild(0).gameObject;
+        GameObject firstRow = setView.Content.Find("LevelSet_" + snapshot[0].Value.levelSetName).gameObject;
         eventSystem.SetSelectedGameObject(firstRow);
         yield return new WaitForSecondsRealtime(0.1f);
         AxisEventData right = new AxisEventData(eventSystem);
         right.moveDir = MoveDirection.Right;
         ExecuteEvents.Execute(firstRow, right, ExecuteEvents.moveHandler);
         yield return new WaitForSecondsRealtime(0.1f);
-        Logger.LogInfo("Right focus diagnostics: selected=" + (eventSystem.currentSelectedGameObject == null ? "null" : eventSystem.currentSelectedGameObject.name) + ", pending=" + (eventSystem.GetPendingSelectedGameObject() == null ? "null" : eventSystem.GetPendingSelectedGameObject().name));
+        GameObject pinFocus = firstRow.transform.Find("DIYSorting_Pin").gameObject;
+        Check(eventSystem.currentSelectedGameObject == pinFocus, "Native right navigation reaches the row pin button");
+        ExecuteEvents.Execute(pinFocus, right, ExecuteEvents.moveHandler);
+        yield return new WaitForSecondsRealtime(0.1f);
         Check(eventSystem.currentSelectedGameObject == dropdown.gameObject, "Native right navigation reaches fixed toolbar");
         AxisEventData left = new AxisEventData(eventSystem);
         left.moveDir = MoveDirection.Left;
         ExecuteEvents.Execute(dropdown.gameObject, left, ExecuteEvents.moveHandler);
+        yield return new WaitForSecondsRealtime(0.1f);
+        Check(eventSystem.currentSelectedGameObject == pinFocus, "Native left navigation returns to the selected row pin");
+        ExecuteEvents.Execute(pinFocus, left, ExecuteEvents.moveHandler);
         yield return new WaitForSecondsRealtime(0.1f);
         Check(eventSystem.currentSelectedGameObject == firstRow, "Native left navigation returns to the selected list row");
         T17Button trigger = dropdown.GetComponent<T17Button>();
@@ -394,6 +440,17 @@ public sealed class UnityTests : BaseUnityPlugin
         CheckSingleBadge(levelView, levelButton.transform, "Latest real level after rebuild");
         CheckSingleBadge(setView, setView.Content.Find("LevelSet_" + chosen.levelSetName), "Latest real package after refresh");
         Check(levels.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Level clear/rebuild restores exactly two dropdowns");
+
+        IEnumerator pinChecks = VerifyPins(levelView, LevelPinRows(levelView, chosen));
+        while (pinChecks.MoveNext()) yield return pinChecks.Current;
+        levels.Hide(false, false);
+        sets.Show(user, root, rootObject, false);
+        yield return new WaitForSecondsRealtime(0.2f);
+        List<KeyValuePair<T17Button, string>> packagePins = new List<KeyValuePair<T17Button, string>>();
+        foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot)
+            packagePins.Add(new KeyValuePair<T17Button, string>(setView.Content.Find("LevelSet_" + pair.Value.levelSetName).GetComponent<T17Button>(), SortingPlugin.Instance.Metadata.Get(pair.Value).Identity));
+        pinChecks = VerifyPins(setView, packagePins);
+        while (pinChecks.MoveNext()) yield return pinChecks.Current;
 
         // Append synthetic packages through the exact installed private button entry.
         LevelSetInfoSO duplicateA = Fixture("Same Name", "shared_scene", "fixture-a");
@@ -624,12 +681,102 @@ public sealed class UnityTests : BaseUnityPlugin
             IEnumerator work = VerifyKitchenReturn(chosen);
             while (work.MoveNext()) yield return work.Current;
         }
+        if (roundEnd)
+        {
+            IEnumerator work = VerifyRoundEnd(chosen);
+            while (work.MoveNext()) yield return work.Current;
+        }
     }
 
     private static string FileHash(string path)
     {
         if (!File.Exists(path)) return null;
         using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path)));
+    }
+
+    private static List<KeyValuePair<T17Button, string>> LevelPinRows(MenuView view, LevelSetInfoSO set)
+    {
+        List<KeyValuePair<T17Button, string>> result = new List<KeyValuePair<T17Button, string>>();
+        foreach (LevelInfoSO level in set.levelInfos)
+            result.Add(new KeyValuePair<T17Button, string>(view.Content.Find("Level_" + level.levelName).GetComponent<T17Button>(), SortingPlugin.Instance.Metadata.Get(set).LevelIds[level]));
+        return result;
+    }
+
+    private IEnumerator VerifyPins(MenuView view, List<KeyValuePair<T17Button, string>> items)
+    {
+        Check(items.Count >= 2, "Pin regression has two real business rows");
+        string history = SortingPlugin.Instance.History.Save();
+        string scene = selectedScene;
+        foreach (KeyValuePair<T17Button, string> item in items)
+        {
+            Transform pin = item.Key.transform.Find("DIYSorting_Pin");
+            Check(pin != null && item.Key.GetComponentsInChildren<RowPinControl>(true).Length == 1, "Each real row owns exactly one pin control: " + item.Key.name);
+            Check(pin.parent == item.Key.transform && pin.localScale == Vector3.one, "Pin inherits its row's menu scaling: " + item.Key.name);
+            Check(pin.GetComponent<RowPinControl>().Owner == item.Key, "Pin selection maps to the original scroll row");
+            if (SortingPlugin.Instance.Pins.IndexOf(item.Value) >= 0) SortingPlugin.Instance.TogglePin(item.Value);
+        }
+        T17Button first = items[items.Count - 1].Key;
+        T17Button second = items[0].Key;
+        string firstName = first.name;
+        string secondName = second.name;
+        string firstId = items[items.Count - 1].Value;
+        string secondId = items[0].Value;
+        T17Button firstPin = first.transform.Find("DIYSorting_Pin").GetComponent<T17Button>();
+        T17Button secondPin = second.transform.Find("DIYSorting_Pin").GetComponent<T17Button>();
+        view.Menu.CachedEventSystem.SetSelectedGameObject(firstPin.gameObject);
+        yield return new WaitForSecondsRealtime(0.1f);
+        CheckRaycast(view.Menu.CachedEventSystem, firstPin, "Pin is reachable by the actual menu raycaster");
+        PointerEventData click = new PointerEventData(view.Menu.CachedEventSystem);
+        click.button = PointerEventData.InputButton.Left;
+        ExecuteEvents.Execute(firstPin.gameObject, click, ExecuteEvents.pointerClickHandler);
+        ExecuteEvents.Execute(secondPin.gameObject, new BaseEventData(view.Menu.CachedEventSystem), ExecuteEvents.submitHandler);
+        Check(SortingPlugin.Instance.Pins.IndexOf(firstId) >= 0 && SortingPlugin.Instance.Pins.IndexOf(secondId) > SortingPlugin.Instance.Pins.IndexOf(firstId), "Mouse and native submit preserve pinning order");
+        int start = view.Content.Find("FastInit_Reload") == null ? 0 : 1;
+        for (int method = 0; method < 2; method++) for (int direction = 0; direction < 2; direction++)
+        {
+            SortingPlugin.Instance.SetSort(method, false);
+            SortingPlugin.Instance.SetSort(direction, true);
+            Check(view.Content.GetChild(start) == first.transform && view.Content.GetChild(start + 1) == second.transform, "Pinned rows remain immediately after refresh and ignore " + (SortMethod)method + "/" + (SortDirection)direction);
+            CheckNavigation(view);
+        }
+        Check(firstPin.transform.Find("Title").GetComponent<T17Text>().text == Language.Unpin, "Pinned button shows the localized unpin action");
+        Check(SortingPlugin.Instance.History.Save() == history && selectedScene == scene, "Pin clicks preserve the green dot and original level callback");
+        ConfigFile disk = new ConfigFile(SortingPlugin.Instance.Config.ConfigFilePath, false);
+        Check(new PinOrder(disk.Bind<string>("Pinning", "PinnedEntries", "", "test").Value).IndexOf(secondId) > new PinOrder(disk.Bind<string>("Pinning", "PinnedEntries", "", "test").Value).IndexOf(firstId), "Pin order is saved to disk");
+        SortingPlugin.Instance.Config.Reload();
+        yield return null;
+        Check(view.Content.GetChild(start) == first.transform && view.Content.GetChild(start + 1) == second.transform, "Config reload preserves the real pinned row order");
+        RectTransform rowRect = first.GetComponent<RectTransform>();
+        Vector3 savedScale = rowRect.localScale;
+        Vector3[] before = new Vector3[4];
+        Vector3[] after = new Vector3[4];
+        firstPin.GetComponent<RectTransform>().GetWorldCorners(before);
+        rowRect.localScale = savedScale * 0.8f;
+        firstPin.GetComponent<RectTransform>().GetWorldCorners(after);
+        Check(Mathf.Abs(Vector3.Distance(after[0], after[3]) / Vector3.Distance(before[0], before[3]) - 0.8f) < 0.001f, "Pin's visible width follows the real row scaling");
+        rowRect.localScale = savedScale;
+        ExecuteEvents.Execute(firstPin.gameObject, new BaseEventData(view.Menu.CachedEventSystem), ExecuteEvents.submitHandler);
+        Check(SortingPlugin.Instance.Pins.IndexOf(firstId) < 0 && view.Content.GetChild(start) == second.transform, "Unpinning restores ordinary sorting and retains the other pin");
+        ExecuteEvents.Execute(firstPin.gameObject, click, ExecuteEvents.pointerClickHandler);
+        Check(view.Content.GetChild(start) == second.transform && view.Content.GetChild(start + 1) == first.transform, "Repinning appends after earlier pinned rows");
+        ScreenCapture.CaptureScreenshot(Path.Combine(output, view.Content.GetChild(0).name.StartsWith("Level_") ? "level-pins.png" : "package-pins.png"));
+        yield return new WaitForSecondsRealtime(0.2f);
+        // Rebuild the actual native content while pins remain saved.
+        FrontendOptionsMenu sets = (FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null);
+        if (view.Menu == sets)
+        {
+            DIYUI.ClearAllMenuContent(sets);
+            MethodInfo addSet = AccessTools.Method(typeof(DIYLevelEntryUI), "AddLevelSetButton");
+            foreach (KeyValuePair<string, LevelSetInfoSO> item in DIYLevelAssetBundleManager.levelSetInfos)
+                addSet.Invoke(null, new object[] { item.Value });
+        }
+        else AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { SortingPlugin.Instance.SelectedSet });
+        view.Flush();
+        Check(SortingPlugin.Instance.Pins.IndexOf(firstId) >= 0 && SortingPlugin.Instance.Pins.IndexOf(secondId) >= 0, "Content rebuild preserves both saved pin identities");
+        start = view.Content.Find("FastInit_Reload") == null ? 0 : 1;
+        Check(view.Content.GetChild(start).name == secondName && view.Content.GetChild(start + 1).name == firstName, "Native clear/rebuild restores the pinned display order");
+        SortingPlugin.Instance.TogglePin(firstId);
+        SortingPlugin.Instance.TogglePin(secondId);
     }
 
     private void AcknowledgeUpdateCheckError()
@@ -665,6 +812,83 @@ public sealed class UnityTests : BaseUnityPlugin
             sandboxSaves[__result] = sandbox;
         }
         __result = sandbox;
+    }
+
+    private IEnumerator VerifyRoundEnd(LevelSetInfoSO set)
+    {
+        LevelInfoSO level = Array.Find(set.levelInfos, delegate(LevelInfoSO item) { return item.sceneName == "s_ha_test_0"; }) ?? set.levelInfos[0];
+        FrontendRootMenu root = GameObject.Find("/Frontend/FrontendParent/FrontendRootMenu").GetComponent<FrontendRootMenu>();
+        FrontendDLCMenu dlcMenu = root.GetComponentInChildren<FrontendDLCMenu>(true);
+        Check(dlcMenu != null, "The native DLC menu exists before selecting the first kitchen");
+        dlcMenu.Show(root.CurrentGamepadUser, root, root.gameObject, false);
+        FrontendOptionsMenu sets = (FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null);
+        sets.Show(root.CurrentGamepadUser, root, root.gameObject, false);
+        AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { set });
+        FrontendOptionsMenu levels = (FrontendOptionsMenu)GameAccess.LevelMenu.GetValue(null);
+        T17Button button = levels.GetComponent<MenuView>().Content.Find("Level_" + level.levelName).GetComponent<T17Button>();
+        levels.CachedEventSystem.SetSelectedGameObject(button.gameObject);
+        yield return new WaitForSecondsRealtime(0.2f);
+        button.OnSubmit(new BaseEventData(levels.CachedEventSystem));
+        DIYLevelAssetBundleManager.LoadLevelServer(level.sceneName);
+        float deadline = Time.realtimeSinceStartup + 65f;
+        ServerCampaignFlowController server = null;
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            if (SceneManager.GetActiveScene().name == level.sceneName && !LoadingScreenFlow.IsLoading)
+                server = Array.Find(Resources.FindObjectsOfTypeAll<ServerCampaignFlowController>(), delegate(ServerCampaignFlowController item) { return item.gameObject.scene.IsValid() && item.InRound; });
+            if (server != null) break;
+            yield return null;
+        }
+        Check(server != null, "Round-end test reaches an actual running custom kitchen");
+        ServerRoundTimer timer = AccessTools.Field(typeof(ServerKitchenFlowControllerBase), "m_roundTimer").GetValue(server) as ServerRoundTimer;
+        Check(timer != null && !timer.TimeExpired(), "The original kitchen timer is running before expiry");
+        // Shorten only the test kitchen's timer; its normal Update/HasFinished/outro
+        // and frontend-loading chain must run without a simulated return or quit.
+        AccessTools.Field(typeof(ServerRoundTimer), "m_timeLimit").SetValue(timer, timer.TimeElapsed + 1f);
+        deadline = Time.realtimeSinceStartup + 65f;
+        bool expired = false;
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            expired |= timer.TimeExpired();
+            levels = GameAccess.LevelMenu.GetValue(null) as FrontendOptionsMenu;
+            if (SceneManager.GetActiveScene().name == "StartScreen" && !LoadingScreenFlow.IsLoading && levels != null
+                && levels.gameObject.activeInHierarchy && !SortingPlugin.Instance.Return.State.Pending) break;
+            yield return null;
+        }
+        Check(expired, "The native countdown actually reaches TimeExpired");
+        Check(SceneManager.GetActiveScene().name == "StartScreen" && !LoadingScreenFlow.IsLoading && levels != null && levels.gameObject.activeInHierarchy,
+            "The native results flow returns to the previous DIY level list");
+        yield return new WaitForSecondsRealtime(0.8f);
+        allowSaveDialog = true;
+        selectedScene = null;
+        button = levels.GetComponent<MenuView>().Content.Find("Level_" + level.levelName).GetComponent<T17Button>();
+        button.OnSubmit(new BaseEventData(levels.CachedEventSystem));
+        yield return new WaitForSecondsRealtime(0.5f);
+        Check(selectedScene == level.sceneName, "A real level button still dispatches its original callback after timer expiry");
+        SelectSaveDialog dialog = T17FrontendFlow.Instance.gameObject.GetComponentInChildren<SelectSaveDialog>(true);
+        Check(dialog != null && dialog.gameObject.activeInHierarchy && dialog.CurrentGamepadUser != null,
+            "After timer expiry a real level click opens the native save-selection dialog with an engaged user");
+        dialog.InvokeNavigateOnUICancel();
+        yield return new WaitForSecondsRealtime(0.3f);
+        LevelInfoSO nextLevel = Array.Find(set.levelInfos, delegate(LevelInfoSO item) { return item.sceneName != level.sceneName; });
+        Check(nextLevel != null, "Round-end regression has a different custom kitchen to select next");
+        selectedScene = null;
+        button = levels.GetComponent<MenuView>().Content.Find("Level_" + nextLevel.levelName).GetComponent<T17Button>();
+        button.OnSubmit(new BaseEventData(levels.CachedEventSystem));
+        deadline = Time.realtimeSinceStartup + 20f;
+        while (Time.realtimeSinceStartup < deadline && (!dialog.gameObject.activeInHierarchy
+            || AccessTools.Field(typeof(SelectSaveDialog), "m_slotUpdate").GetValue(dialog) != null)) yield return null;
+        Check(selectedScene == nextLevel.sceneName && dialog.gameObject.activeInHierarchy, "Selecting a different level opens its original save dialog");
+        SaveSlotElement[] slots = AccessTools.Field(typeof(SelectSaveDialog), "m_saveElements").GetValue(dialog) as SaveSlotElement[];
+        Check(slots != null && slots.Length > 0 && slots[0].gameObject.activeInHierarchy, "Native save-slot loading completes after the returned-list click");
+        slots[0].OnSlotClicked();
+        deadline = Time.realtimeSinceStartup + 65f;
+        while (Time.realtimeSinceStartup < deadline && (SceneManager.GetActiveScene().name != nextLevel.sceneName || LoadingScreenFlow.IsLoading)) yield return null;
+        Check(SceneManager.GetActiveScene().name == nextLevel.sceneName && !LoadingScreenFlow.IsLoading, "The original save-slot callback loads a different real kitchen after countdown expiry");
+        allowSaveDialog = false;
+        foreach (KeyValuePair<string, string> item in saveHashes)
+            Check(FileHash(item.Key) == item.Value, "A real round end leaves the original save unchanged");
+        File.WriteAllText(Path.Combine(output, "round-end-result.txt"), "Native countdown expired; results returned to the DIY list; real clicks opened save selection; the original save-slot callback loaded a different kitchen. Original save hashes unchanged.");
     }
 
     private IEnumerator VerifyKitchenReturn(LevelSetInfoSO set)

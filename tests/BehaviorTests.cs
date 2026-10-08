@@ -33,6 +33,7 @@ internal static class BehaviorTests
             Order(SortMethod.AddedTime, SortDirection.Ascending, "acb");
             Order(SortMethod.AddedTime, SortDirection.Descending, "bca");
             ReturnToList();
+            Pinning();
             foreach (SortMethod method in Enum.GetValues(typeof(SortMethod)))
             foreach (SortDirection direction in Enum.GetValues(typeof(SortDirection)))
             {
@@ -107,6 +108,34 @@ internal static class BehaviorTests
             return 0;
         }
         catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+    }
+
+    private static void Pinning()
+    {
+        PinOrder pins = new PinOrder("z;a;z;;");
+        Check(pins.Save() == "z;a", "Saved pin order is preserved and duplicates are removed.");
+        foreach (SortMethod method in Enum.GetValues(typeof(SortMethod)))
+        foreach (SortDirection direction in Enum.GetValues(typeof(SortDirection)))
+        {
+            List<SortKey> rows = new List<SortKey>();
+            rows.Add(new SortKey("Zulu", 90, "z"));
+            rows.Add(new SortKey("Alpha", 1, "a"));
+            rows.Add(new SortKey("Bravo", 30, "b"));
+            rows.Add(new SortKey("Charlie", 40, "c"));
+            rows.Sort(new SortKeyComparer(method, direction, CultureInfo.InvariantCulture, pins));
+            Check(rows[0].Identity == "z" && rows[1].Identity == "a", "Pinned rows retain click order for every sort method/direction.");
+            Check(rows[2].Identity == (direction == SortDirection.Ascending ? "b" : "c"), "Unpinned rows still follow the selected sort direction.");
+        }
+        Check(pins.Toggle("z") && pins.Save() == "a" && pins.IndexOf("z") < 0, "Unpinning removes only the selected identity.");
+        Check(pins.Toggle("z") && pins.Save() == "a;z", "Repinning appends after the other pins.");
+        Check(new PinOrder(pins.Save()).IndexOf("z") == 1, "Pin persistence round-trips the fixed order.");
+        Check(!pins.Toggle(null) && !pins.Toggle(string.Empty), "Empty identities do not alter pins.");
+        string package = StableIdentity.Package("pin-package", null, null);
+        string level = StableIdentity.Level(package, "same", 0);
+        string duplicate = StableIdentity.Level(package, "same", 1);
+        pins.Toggle(package);
+        pins.Toggle(level);
+        Check(pins.IndexOf(package) >= 0 && pins.IndexOf(level) >= 0 && pins.IndexOf(duplicate) < 0, "Package pins and duplicate-scene level pins remain distinct.");
     }
 
     private static void ReturnToList()

@@ -111,12 +111,17 @@ namespace OC2DIYLevelSorting
                 FrontendOptionsMenu sets = GameAccess.SetMenu.GetValue(null) as FrontendOptionsMenu;
                 FrontendOptionsMenu levels = GameAccess.LevelMenu.GetValue(null) as FrontendOptionsMenu;
                 if (sets == null || levels == null) return false;
+                FrontendDLCMenu dlcMenu = root.SearchAllForMenuOfType<FrontendDLCMenu>();
+                if (dlcMenu == null) return false;
                 LevelSetInfoSO target = null;
                 foreach (KeyValuePair<string, LevelSetInfoSO> item in DIY.levelSetInfos)
                     if (item.Value != null && plugin.Metadata.Get(item.Value).Identity == State.PackageIdentity) { target = item.Value; break; }
                 T17FrontendFlow.Instance.FocusOnMainMenu();
                 root.HideMenuStack();
                 root.ExpandCurrentTab();
+                // DIYLevel's original level callback reads the DLC card's handler
+                // and its engaged player. Native Show binds both after a reload.
+                if (!dlcMenu.Show(root.CurrentGamepadUser, root, root.gameObject, false)) return false;
                 sets.Show(root.CurrentGamepadUser, root, root.gameObject, false);
                 if (target != null)
                 {

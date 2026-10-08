@@ -177,10 +177,12 @@ namespace OC2DIYLevelSorting
             catch (Exception e) { Error("FrontendOptionsMenu.Hide", "Prefix", e); }
         }
 
-        private static bool ElementSelected(T17ScrollView __instance, Selectable __0, ref int __1)
+        private static bool ElementSelected(T17ScrollView __instance, ref Selectable __0, ref int __1)
         {
             try
             {
+                RowPinControl pin = __0 == null ? null : __0.GetComponent<RowPinControl>();
+                if (pin != null && pin.Owner != null) __0 = pin.Owner;
                 MenuView view = __instance.GetComponentInParent<MenuView>();
                 if (view != null && __0 != null) return view.AcceptSelection(__0, ref __1);
             }

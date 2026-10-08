@@ -28,16 +28,25 @@ namespace OC2DIYLevelSorting
         private readonly SortMethod method;
         private readonly SortDirection direction;
         private readonly CompareInfo culture;
+        private readonly PinOrder pins;
 
         internal SortKeyComparer(SortMethod method, SortDirection direction, CultureInfo culture)
+            : this(method, direction, culture, null) { }
+
+        internal SortKeyComparer(SortMethod method, SortDirection direction, CultureInfo culture, PinOrder pins)
         {
             this.method = method;
             this.direction = direction;
             this.culture = culture.CompareInfo;
+            this.pins = pins;
         }
 
         public int Compare(SortKey a, SortKey b)
         {
+            int pinnedA = pins == null ? -1 : pins.IndexOf(a.Identity);
+            int pinnedB = pins == null ? -1 : pins.IndexOf(b.Identity);
+            if (pinnedA >= 0 || pinnedB >= 0)
+                return pinnedA < 0 ? 1 : pinnedB < 0 ? -1 : pinnedA.CompareTo(pinnedB);
             int result = method == SortMethod.AddedTime
                 ? a.AddedTicks.CompareTo(b.AddedTicks)
                 : culture.Compare(a.Name, b.Name, CompareOptions.IgnoreCase);
@@ -106,6 +115,44 @@ namespace OC2DIYLevelSorting
         internal bool Contains(string id) { return lastLevel.Length != 0 && string.Equals(lastLevel, id, StringComparison.Ordinal); }
         internal bool HasPackage(string id) { return lastPackage.Length != 0 && string.Equals(lastPackage, id, StringComparison.Ordinal); }
         internal string Save() { return lastLevel; }
+    }
+
+    internal sealed class PinOrder
+    {
+        private readonly List<string> identities = new List<string>();
+        private readonly Dictionary<string, int> positions = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        internal PinOrder(string saved)
+        {
+            foreach (string id in (saved ?? string.Empty).Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (positions.ContainsKey(id)) continue;
+                positions.Add(id, identities.Count);
+                identities.Add(id);
+            }
+        }
+
+        internal int IndexOf(string id)
+        {
+            int index;
+            return id != null && positions.TryGetValue(id, out index) ? index : -1;
+        }
+
+        internal bool Toggle(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            int index = IndexOf(id);
+            if (index < 0) { positions.Add(id, identities.Count); identities.Add(id); }
+            else
+            {
+                identities.RemoveAt(index);
+                positions.Remove(id);
+                for (int i = index; i < identities.Count; i++) positions[identities[i]] = i;
+            }
+            return true;
+        }
+
+        internal string Save() { return string.Join(";", identities.ToArray()); }
     }
 
     internal sealed class RefreshGate

@@ -17,6 +17,8 @@ namespace OC2DIYLevelSorting
         internal SortKey Key;
         internal GameObject Badge;
         internal T17Text NameText;
+        internal T17Button Pin;
+        internal T17Text PinText;
     }
 
     public sealed class MenuView : MonoBehaviour
@@ -98,6 +100,7 @@ namespace OC2DIYLevelSorting
             Transform label = button.transform.Find(level == null ? "LevelSetName" : "Title");
             row.NameText = label == null ? null : label.GetComponent<T17Text>();
             row.Badge = CreateBadge(button, level == null);
+            CreatePin(row);
             rows.Add(row);
             if (level != null)
             {
@@ -121,6 +124,63 @@ namespace OC2DIYLevelSorting
                 : DIYUI.GetLocalizedText(row.Set.levelSetName, row.Set.levelSetNameZH);
         }
 
+        private void CreatePin(Row row)
+        {
+            row.Pin = DIYUI.AddButton(Menu, "DIYSorting_Pin", string.Empty, string.Empty, delegate
+            {
+                try { SortingPlugin.Instance.TogglePin(row.Key.Identity); }
+                catch (Exception e) { SortingPlugin.Instance.Report("DIYSorting_Pin.onClick", "Listener", e); }
+            });
+            row.Pin.transform.SetParent(row.Button.transform, false);
+            RectTransform rect = row.Pin.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(1, 0.5f);
+            rect.pivot = new Vector2(1, 0.5f);
+            rect.sizeDelta = new Vector2(104f, 42f);
+            rect.anchoredPosition = new Vector2(-12f, 0);
+            LayoutElement layout = row.Pin.GetComponent<LayoutElement>();
+            if (layout != null) layout.ignoreLayout = true;
+            row.PinText = row.Pin.transform.Find("Title").GetComponent<T17Text>();
+            RectTransform title = row.PinText.GetComponent<RectTransform>();
+            title.anchorMin = Vector2.zero;
+            title.anchorMax = Vector2.one;
+            title.offsetMin = new Vector2(4, 0);
+            title.offsetMax = new Vector2(-4, 0);
+            row.PinText.alignment = TextAnchor.MiddleCenter;
+            row.PinText.resizeTextForBestFit = true;
+            row.PinText.resizeTextMinSize = 12;
+            row.PinText.resizeTextMaxSize = 22;
+            RowPinControl owner = row.Pin.gameObject.AddComponent<RowPinControl>();
+            owner.Owner = row.Button;
+            SelectionTracker tracker = row.Pin.gameObject.AddComponent<SelectionTracker>();
+            tracker.View = this;
+            if (row.Level == null)
+            {
+                // Preserve native child paths used by DIYLevel/FastInit while
+                // reserving the right-hand part of the metadata line for Pin.
+                foreach (Transform child in row.Button.transform)
+                {
+                    if (child.GetComponent<T17Text>() == null) continue;
+                    RectTransform textRect = child as RectTransform;
+                    if (textRect == null) continue;
+                    textRect.anchorMin = new Vector2(textRect.anchorMin.x * 0.82f, textRect.anchorMin.y);
+                    textRect.anchorMax = new Vector2(textRect.anchorMax.x * 0.82f, textRect.anchorMax.y);
+                }
+            }
+            else if (row.NameText != null)
+            {
+                RectTransform nameRect = row.NameText.GetComponent<RectTransform>();
+                Vector2 end = nameRect.offsetMax;
+                end.x -= 124f;
+                nameRect.offsetMax = end;
+            }
+            RefreshPin(row);
+        }
+
+        private static void RefreshPin(Row row)
+        {
+            if (row.PinText != null) row.PinText.SetNonLocalizedText(SortingPlugin.Instance.Pins.IndexOf(row.Key.Identity) >= 0 ? Language.Unpin : Language.Pin);
+        }
+
         private void EnsureControls()
         {
             if (method == null) method = SortingDropdown.Create(this, "DIYSorting_Method", false);
@@ -139,6 +199,7 @@ namespace OC2DIYLevelSorting
                 row.Key.Name = Name(row) ?? string.Empty;
                 if (row.NameText != null) row.NameText.SetNonLocalizedText(row.Key.Name);
                 RefreshBadge(row);
+                RefreshPin(row);
             }
             Request();
         }
@@ -171,7 +232,7 @@ namespace OC2DIYLevelSorting
                 tracked.Clear();
                 foreach (Row row in rows) tracked.Add(row.Button);
                 SortKeyComparer comparer = new SortKeyComparer(SortingPlugin.Instance.Method, SortingPlugin.Instance.Direction,
-                    Localization.GetLanguage() == SupportedLanguages.Chinese ? CultureInfo.GetCultureInfo("zh-CN") : CultureInfo.GetCultureInfo("en-US"));
+                    Localization.GetLanguage() == SupportedLanguages.Chinese ? CultureInfo.GetCultureInfo("zh-CN") : CultureInfo.GetCultureInfo("en-US"), SortingPlugin.Instance.Pins);
                 rows.Sort(delegate(Row a, Row b) { return comparer.Compare(a.Key, b.Key); });
                 HashSet<Transform> sorted = new HashSet<Transform>();
                 foreach (Row row in rows) sorted.Add(row.Button.transform);
@@ -186,8 +247,14 @@ namespace OC2DIYLevelSorting
                 }
                 int index = 0;
                 if (reload != null) Move(reload, index++);
+                foreach (Row row in rows) if (SortingPlugin.Instance.Pins.IndexOf(row.Key.Identity) >= 0) Move(row.Button.transform, index++);
                 foreach (Transform child in fixedRows) Move(child, index++);
-                foreach (Row row in rows) { Move(row.Button.transform, index++); RefreshBadge(row); }
+                foreach (Row row in rows)
+                {
+                    if (SortingPlugin.Instance.Pins.IndexOf(row.Key.Identity) < 0) Move(row.Button.transform, index++);
+                    RefreshBadge(row);
+                    RefreshPin(row);
+                }
                 LayoutRebuilder.ForceRebuildLayoutImmediate(Content);
                 SynchronizeNavigation();
             }
@@ -206,6 +273,8 @@ namespace OC2DIYLevelSorting
             List<Selectable> selectables = new List<Selectable>();
             T17EventSystem system = Menu.CachedEventSystem ?? Scroll.CachedEventSystem;
             GameObject selected = system == null ? null : system.currentSelectedGameObject;
+            RowPinControl selectedPin = selected == null ? null : selected.GetComponent<RowPinControl>();
+            GameObject selectedRow = selectedPin == null || selectedPin.Owner == null ? selected : selectedPin.Owner.gameObject;
             for (int i = 0; i < Content.childCount; i++)
             {
                 Transform child = Content.GetChild(i);
@@ -222,6 +291,13 @@ namespace OC2DIYLevelSorting
                 Scroll.AddAllowedSelectables(selectable);
                 T17Button button = selectable as T17Button;
                 if (button != null && system != null) button.SetEventSystem(system);
+                T17Button pin = child.Find("DIYSorting_Pin") == null ? null : child.Find("DIYSorting_Pin").GetComponent<T17Button>();
+                if (pin != null)
+                {
+                    if (system != null) pin.SetEventSystem(system);
+                    Menu.AddAllowedSelectables(pin);
+                    Scroll.AddAllowedSelectables(pin);
+                }
             }
             for (int i = 0; i < selectables.Count; i++)
             {
@@ -230,8 +306,17 @@ namespace OC2DIYLevelSorting
                 nav.selectOnUp = i == 0 ? Scroll.m_BorderSelectables.selectOnUp : selectables[i - 1];
                 nav.selectOnDown = i == selectables.Count - 1 ? Scroll.m_BorderSelectables.selectOnDown : selectables[i + 1];
                 nav.selectOnLeft = Scroll.m_BorderSelectables.selectOnLeft;
-                nav.selectOnRight = method.GetComponent<Selectable>();
+                Transform pinTransform = selectables[i].transform.Find("DIYSorting_Pin");
+                T17Button pin = pinTransform == null ? null : pinTransform.GetComponent<T17Button>();
+                nav.selectOnRight = pin == null ? method.GetComponent<Selectable>() : pin;
                 selectables[i].navigation = nav;
+                if (pin != null)
+                {
+                    Navigation pinNav = nav;
+                    pinNav.selectOnLeft = selectables[i];
+                    pinNav.selectOnRight = method.GetComponent<Selectable>();
+                    pin.navigation = pinNav;
+                }
             }
             if (Scroll.m_BorderSelectables.selectOnDown != null && selectables.Count > 0)
             {
@@ -239,14 +324,14 @@ namespace OC2DIYLevelSorting
                 nav.selectOnUp = selectables[selectables.Count - 1];
                 Scroll.m_BorderSelectables.selectOnDown.navigation = nav;
             }
-            int current = selected == null ? -1 : cache.FindIndex(delegate(RectTransform item) { return item.gameObject == selected; });
+            int current = selectedRow == null ? -1 : cache.FindIndex(delegate(RectTransform item) { return item.gameObject == selectedRow; });
             if (current < 0) current = Math.Min(Scroll.GetCurrentSelected(), Math.Max(0, cache.Count - 1));
             GameAccess.Current.SetValue(Scroll, current);
             GameAccess.Previous.SetValue(Scroll, current);
             GameAccess.LerpTime.SetValue(Scroll, 0f);
             GameAccess.DesiredPosition.SetValue(Scroll, (Vector2)Content.localPosition);
-            if (selected != null && selected.transform.parent == Content && Menu.isActiveAndEnabled)
-                Scroll.ScrollToEntry(selected, false);
+            if (selectedRow != null && selectedRow.transform.parent == Content && Menu.isActiveAndEnabled)
+                Scroll.ScrollToEntry(selectedRow, false);
             method.BindEventSystem(system);
             direction.BindEventSystem(system);
             Menu.AddAllowedSelectables(method.GetComponent<Selectable>());
@@ -267,6 +352,8 @@ namespace OC2DIYLevelSorting
 
         private void LinkToolbar(Selectable returnTo)
         {
+            Transform pin = returnTo == null ? null : returnTo.transform.Find("DIYSorting_Pin");
+            if (pin != null) returnTo = pin.GetComponent<Selectable>();
             Selectable methodButton = method.GetComponent<Selectable>();
             Selectable directionButton = direction.GetComponent<Selectable>();
             Navigation methodNavigation = methodButton.navigation;
@@ -370,6 +457,11 @@ namespace OC2DIYLevelSorting
             CloseDropdowns(false);
             if (SortingPlugin.Instance != null && !object.ReferenceEquals(Menu, null)) SortingPlugin.Instance.Forget(Menu);
         }
+    }
+
+    public sealed class RowPinControl : MonoBehaviour
+    {
+        internal T17Button Owner;
     }
 
     public sealed class ContentChanges : MonoBehaviour

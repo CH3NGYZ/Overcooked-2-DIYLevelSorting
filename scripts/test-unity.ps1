@@ -2,7 +2,8 @@ param(
     [string]$GameRoot = 'E:\SteamLibrary\steamapps\common\Overcooked! 2',
     [string]$MSBuild = 'D:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe',
     [switch]$WithoutFastInit,
-    [switch]$WithKitchenReturn
+    [switch]$WithKitchenReturn,
+    [switch]$WithRoundEnd
 )
 $ErrorActionPreference = 'Stop'
 if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A player game is running; close it before running Unity tests.' }
@@ -12,6 +13,7 @@ if ($LASTEXITCODE -ne 0) { throw "Unity test build failed ($LASTEXITCODE)." }
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $variant = if ($WithoutFastInit) { 'without-fastinit' } else { 'with-fastinit' }
 if ($WithKitchenReturn) { $variant += '-kitchen-return' }
+if ($WithRoundEnd) { $variant += '-round-end' }
 $runDirectory = Join-Path $workspace ('.validation\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $variant)
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 $backupDirectory = Join-Path $runDirectory 'backup'
@@ -59,6 +61,7 @@ try {
     $env:OC2_SORTING_TEST_OUTPUT = $runDirectory
     $arguments = @('-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '720', '-logFile', ('"' + (Join-Path $runDirectory 'player.log') + '"'), '-oc2SortingTestOutput', ('"' + $runDirectory + '"'))
     if ($WithKitchenReturn) { $arguments += '-oc2SortingTestKitchenReturn' }
+    if ($WithRoundEnd) { $arguments += '-oc2SortingTestRoundEnd' }
     $steamPath = (Get-Process -Name steam -ErrorAction SilentlyContinue | Select-Object -First 1).Path
     if (-not $steamPath) { $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamExe }
     if ($steamPath -and (Test-Path -LiteralPath $steamPath)) {
@@ -70,7 +73,7 @@ try {
     else {
         $gameProcess = Start-Process -FilePath (Join-Path $GameRoot 'Overcooked2.exe') -WorkingDirectory $GameRoot -ArgumentList $arguments -WindowStyle Hidden -PassThru
     }
-    $timeoutSeconds = if ($WithKitchenReturn) { 240 } else { 150 }
+    $timeoutSeconds = if ($WithKitchenReturn -or $WithRoundEnd) { 300 } else { 150 }
     $deadline = (Get-Date).AddSeconds($timeoutSeconds)
     $startupDeadline = (Get-Date).AddSeconds(45)
     # Steam may restart the bootstrap process. Adopt only a process with this exact

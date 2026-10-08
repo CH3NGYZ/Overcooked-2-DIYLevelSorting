@@ -9,7 +9,7 @@ using UnityEngine.SceneManagement;
 
 namespace OC2DIYLevelSorting
 {
-    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.1.0")]
+    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.2.0")]
     [BepInDependency("dev.gua.overcooked.diylevel")]
     [BepInDependency("oc2.diylevel.fastinit", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("Overcooked2.exe")]
@@ -19,11 +19,13 @@ namespace OC2DIYLevelSorting
         internal static SortingPlugin Instance;
         internal readonly MetadataResolver Metadata = new MetadataResolver();
         internal ClickHistory History;
+        internal PinOrder Pins;
         internal LevelSetInfoSO SelectedSet;
         internal LevelListReturn Return;
         private ConfigEntry<SortMethod> method;
         private ConfigEntry<SortDirection> direction;
         private ConfigEntry<string> history;
+        private ConfigEntry<string> pinnedEntries;
         private ConfigEntry<bool> returnToLevelList;
         private readonly Dictionary<FrontendOptionsMenu, MenuView> views = new Dictionary<FrontendOptionsMenu, MenuView>();
         private Harmony harmony;
@@ -42,9 +44,11 @@ namespace OC2DIYLevelSorting
                 method = Config.Bind<SortMethod>("Sorting", "Method", SortMethod.Name, Language.MethodDescription);
                 direction = Config.Bind<SortDirection>("Sorting", "Direction", SortDirection.Ascending, Language.DirectionDescription);
                 history = Config.Bind<string>("History", "ClickedLevels", string.Empty, Language.HistoryDescription);
+                pinnedEntries = Config.Bind<string>("Pinning", "PinnedEntries", string.Empty, Language.PinDescription);
                 returnToLevelList = Config.Bind<bool>("Navigation", "ReturnToLevelList", true, Language.ReturnDescription);
                 NormalizeSettings();
                 History = new ClickHistory(history.Value);
+                Pins = new PinOrder(pinnedEntries.Value);
                 Return = new LevelListReturn(this);
                 Config.ConfigReloaded += OnConfigReloaded;
                 harmony = new Harmony(PluginGuid);
@@ -86,6 +90,7 @@ namespace OC2DIYLevelSorting
                     configReloaded = false;
                     NormalizeSettings();
                     History = new ClickHistory(history.Value);
+                    Pins = new PinOrder(pinnedEntries.Value);
                     foreach (MenuView view in views.Values) if (view != null) view.RefreshLabels();
                 }
                 // Two dirty gates only: idle frames never traverse entries or UI hierarchies.
@@ -131,6 +136,14 @@ namespace OC2DIYLevelSorting
                 if ((int)method.Value == selected) return;
                 method.Value = (SortMethod)selected;
             }
+            Config.Save();
+            foreach (MenuView view in views.Values) if (view != null) { view.RefreshLabels(); view.Flush(); }
+        }
+
+        internal void TogglePin(string id)
+        {
+            if (!Pins.Toggle(id)) return;
+            pinnedEntries.Value = Pins.Save();
             Config.Save();
             foreach (MenuView view in views.Values) if (view != null) { view.RefreshLabels(); view.Flush(); }
         }

@@ -14,7 +14,7 @@ namespace OC2DIYLevelSorting
     [BepInProcess("Overcooked2.exe")]
     public sealed class SortingPlugin : BaseUnityPlugin
     {
-        public const string PluginGuid = "oc2.diylevel.sorting";
+        public const string PluginGuid = "com.ch3ngyz.plugin.diylevel.sorting";
         internal static SortingPlugin Instance;
         internal readonly MetadataResolver Metadata = new MetadataResolver();
         internal ClickHistory History;

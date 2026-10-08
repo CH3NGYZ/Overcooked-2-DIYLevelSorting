@@ -4,3 +4,5 @@ obj/
 .validation/
 *.user
 *.suo
+AGENTS.md
+GOAL.md

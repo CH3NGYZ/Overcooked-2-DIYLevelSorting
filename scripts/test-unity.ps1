@@ -1,7 +1,8 @@
 param(
     [string]$GameRoot = 'E:\SteamLibrary\steamapps\common\Overcooked! 2',
     [string]$MSBuild = 'D:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe',
-    [switch]$WithoutFastInit
+    [switch]$WithoutFastInit,
+    [switch]$WithKitchenReturn
 )
 $ErrorActionPreference = 'Stop'
 if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A player game is running; close it before running Unity tests.' }
@@ -10,6 +11,7 @@ if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A play
 if ($LASTEXITCODE -ne 0) { throw "Unity test build failed ($LASTEXITCODE)." }
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $variant = if ($WithoutFastInit) { 'without-fastinit' } else { 'with-fastinit' }
+if ($WithKitchenReturn) { $variant += '-kitchen-return' }
 $runDirectory = Join-Path $workspace ('.validation\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $variant)
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 $backupDirectory = Join-Path $runDirectory 'backup'
@@ -56,6 +58,7 @@ try {
     }
     $env:OC2_SORTING_TEST_OUTPUT = $runDirectory
     $arguments = @('-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '720', '-logFile', ('"' + (Join-Path $runDirectory 'player.log') + '"'), '-oc2SortingTestOutput', ('"' + $runDirectory + '"'))
+    if ($WithKitchenReturn) { $arguments += '-oc2SortingTestKitchenReturn' }
     $steamPath = (Get-Process -Name steam -ErrorAction SilentlyContinue | Select-Object -First 1).Path
     if (-not $steamPath) { $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamExe }
     if ($steamPath -and (Test-Path -LiteralPath $steamPath)) {
@@ -67,7 +70,8 @@ try {
     else {
         $gameProcess = Start-Process -FilePath (Join-Path $GameRoot 'Overcooked2.exe') -WorkingDirectory $GameRoot -ArgumentList $arguments -WindowStyle Hidden -PassThru
     }
-    $deadline = (Get-Date).AddSeconds(150)
+    $timeoutSeconds = if ($WithKitchenReturn) { 240 } else { 150 }
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
     $startupDeadline = (Get-Date).AddSeconds(45)
     # Steam may restart the bootstrap process. Adopt only a process with this exact
     # unique test directory in its command line, never an unrelated player process.
@@ -83,7 +87,16 @@ try {
         Start-Sleep -Milliseconds 500
         $gameProcess.Refresh()
     }
-    if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { throw 'Owned test game exceeded 150 seconds; see player.log.' }
+    if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { throw "Owned test game exceeded $timeoutSeconds seconds; see player.log." }
+    $saveManifest = Join-Path $runDirectory 'save-manifest.tsv'
+    if (Test-Path -LiteralPath $saveManifest) {
+        foreach ($line in Get-Content -LiteralPath $saveManifest) {
+            $parts = $line.Split(@("`t"), 2, [StringSplitOptions]::None)
+            $actual = if (Test-Path -LiteralPath $parts[1]) { (Get-FileHash -LiteralPath $parts[1]).Hash } else { '-' }
+            if ($actual -ne $parts[0]) { throw 'An original save changed during the isolated Unity test; see save-manifest.tsv.' }
+        }
+        Write-Output 'Original save hashes unchanged after test process exit.'
+    }
     $resultPath = Join-Path $runDirectory 'result.txt'
     if (-not (Test-Path -LiteralPath $resultPath)) { throw "Test plugin produced no result. Evidence: $runDirectory" }
     $result = Get-Content -LiteralPath $resultPath -Raw

@@ -32,6 +32,7 @@ internal static class BehaviorTests
             Order(SortMethod.Name, SortDirection.Descending, "acb");
             Order(SortMethod.AddedTime, SortDirection.Ascending, "acb");
             Order(SortMethod.AddedTime, SortDirection.Descending, "bca");
+            ReturnToList();
             foreach (SortMethod method in Enum.GetValues(typeof(SortMethod)))
             foreach (SortDirection direction in Enum.GetValues(typeof(SortDirection)))
             {
@@ -106,5 +107,45 @@ internal static class BehaviorTests
             return 0;
         }
         catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+    }
+
+    private static void ReturnToList()
+    {
+        LevelListReturnState state = new LevelListReturnState();
+        state.SceneLeaving("StartScreen", "kitchen", true, true);
+        Check(!state.Pending, "Boot without a session bookmark cannot reopen a level list.");
+        state.Capture("package", "level", "kitchen", 0.4f);
+        state.SceneLeaving("StartScreen", "StartScreen", true, true);
+        Check(!state.Pending, "Cancelling a save selection is not an exited kitchen.");
+        state.SceneEntered("KITCHEN", true);
+        state.SceneLeaving("StartScreen", "kitchen", true, true);
+        Check(state.Pending && state.PackageIdentity == "package" && state.LevelIdentity == "level" && state.ScrollPosition == 0.4f,
+            "An actual custom kitchen return preserves its package, level and viewport bookmark.");
+        state.Complete();
+        state.SceneLeaving("StartScreen", "kitchen", true, true);
+        Check(!state.Pending, "A completed return cannot reopen the menu a second time.");
+        state.SceneEntered("kitchen", true);
+        state.SceneLeaving("kitchen", "kitchen", true, true);
+        Check(!state.Pending, "Restarting the current kitchen does not open a level list.");
+        state.SceneEntered("Loading", true);
+        state.SceneEntered("kitchen", true);
+        state.SceneLeaving("StartScreen", "kitchen", true, false);
+        Check(!state.Pending, "Disabling automatic return preserves the original destination.");
+        state.SceneLeaving("StartScreen", "kitchen", false, true);
+        Check(!state.Pending, "A non-custom session cannot use the custom bookmark.");
+        state.SceneEntered("official", false);
+        state.SceneLeaving("StartScreen", "official", false, true);
+        Check(!state.Pending, "Leaving official levels never opens the old DIY list.");
+        state.Capture("other-package", "other-level", "other-kitchen", 1f);
+        state.SceneEntered("kitchen", true);
+        state.SceneLeaving("StartScreen", "kitchen", true, true);
+        Check(!state.Pending, "A bookmark for another kitchen cannot hijack its return.");
+        state.SceneEntered("other-kitchen", true);
+        state.SceneLeaving("StartScreen", "other-kitchen", true, true);
+        state.SceneEntered("Loading", true);
+        state.SceneEntered("StartScreen", false);
+        Check(state.Pending && state.PackageIdentity == "other-package", "Loading and frontend scenes preserve a pending return.");
+        state.Complete();
+        Check(!state.Pending, "An explicit cancellation consumes pending restoration.");
     }
 }

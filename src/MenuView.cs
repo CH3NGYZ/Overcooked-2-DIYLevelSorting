@@ -300,6 +300,18 @@ namespace OC2DIYLevelSorting
             catch (Exception e) { SortingPlugin.Instance.Report("T17ScrollView.OnElementSelected", "SelectionTracker", e); }
         }
 
+        internal GameObject RestoreFocus(string identity, float scrollPosition)
+        {
+            Flush();
+            Row row = rows.Find(delegate(Row item) { return item.Key.Identity == identity; });
+            if (row == null && rows.Count > 0) row = rows[0];
+            if (row == null || Menu.CachedEventSystem == null) return null;
+            Scroll.verticalNormalizedPosition = Mathf.Clamp01(scrollPosition);
+            Menu.CachedEventSystem.SetSelectedGameObject(row.Button.gameObject);
+            Scroll.ScrollToEntry(row.Button.gameObject, false);
+            return row.Button.gameObject;
+        }
+
         internal bool CloseDropdowns(bool restoreFocus)
         {
             bool closed = method != null && method.Close(restoreFocus);

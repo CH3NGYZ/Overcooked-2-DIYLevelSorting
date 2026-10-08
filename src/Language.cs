@@ -6,6 +6,7 @@ namespace OC2DIYLevelSorting
         internal const string MethodDescription = "Name or AddedTime (file LastWriteTimeUtc; info* for packages, each scene resource file for levels).";
         internal const string DirectionDescription = "Ascending or Descending. Equal values use a stable identity tie-break.";
         internal const string HistoryDescription = "Most recently clicked level identity; only this level and its package are marked. No successful load or completion is required. The legacy key name is retained.";
+        internal const string ReturnDescription = "Return to the previous DIY level list after exiting a loaded custom kitchen. False keeps the original frontend destination. / 退出已进入的自定义关卡后回到原选关列表；关闭则保留原返回行为。";
         internal static string Text(string english, string chinese)
         {
             return OC2DIYLevel.UIUtils.GetLocalizedText(english, chinese);

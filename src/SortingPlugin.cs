@@ -5,10 +5,11 @@ using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
 using LevelEditorStub;
+using UnityEngine.SceneManagement;
 
 namespace OC2DIYLevelSorting
 {
-    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.0.0")]
+    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.1.0")]
     [BepInDependency("dev.gua.overcooked.diylevel")]
     [BepInDependency("oc2.diylevel.fastinit", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("Overcooked2.exe")]
@@ -19,15 +20,18 @@ namespace OC2DIYLevelSorting
         internal readonly MetadataResolver Metadata = new MetadataResolver();
         internal ClickHistory History;
         internal LevelSetInfoSO SelectedSet;
+        internal LevelListReturn Return;
         private ConfigEntry<SortMethod> method;
         private ConfigEntry<SortDirection> direction;
         private ConfigEntry<string> history;
+        private ConfigEntry<bool> returnToLevelList;
         private readonly Dictionary<FrontendOptionsMenu, MenuView> views = new Dictionary<FrontendOptionsMenu, MenuView>();
         private Harmony harmony;
         private bool configReloaded;
 
         internal SortMethod Method { get { return method.Value; } }
         internal SortDirection Direction { get { return direction.Value; } }
+        internal bool ReturnToLevelList { get { return returnToLevelList.Value; } }
 
         private void Awake()
         {
@@ -38,11 +42,14 @@ namespace OC2DIYLevelSorting
                 method = Config.Bind<SortMethod>("Sorting", "Method", SortMethod.Name, Language.MethodDescription);
                 direction = Config.Bind<SortDirection>("Sorting", "Direction", SortDirection.Ascending, Language.DirectionDescription);
                 history = Config.Bind<string>("History", "ClickedLevels", string.Empty, Language.HistoryDescription);
+                returnToLevelList = Config.Bind<bool>("Navigation", "ReturnToLevelList", true, Language.ReturnDescription);
                 NormalizeSettings();
                 History = new ClickHistory(history.Value);
+                Return = new LevelListReturn(this);
                 Config.ConfigReloaded += OnConfigReloaded;
                 harmony = new Harmony(PluginGuid);
                 Patches.Install(harmony);
+                SceneManager.sceneLoaded += OnSceneLoaded;
                 Logger.LogInfo("Sorting enabled; metadata uses info*/scene file LastWriteTimeUtc. DIYLevel=" + typeof(OC2DIYLevel.DIYLevelEntryUI).Assembly.GetName().Version);
             }
             catch (Exception e)
@@ -62,6 +69,13 @@ namespace OC2DIYLevelSorting
         }
 
         private void OnConfigReloaded(object sender, EventArgs e) { configReloaded = true; }
+
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            if (mode != LoadSceneMode.Single) return;
+            try { Return.SceneEntered(scene.name); }
+            catch (Exception e) { Report("SceneManager.sceneLoaded", "Event", e); }
+        }
 
         private void LateUpdate()
         {
@@ -137,6 +151,7 @@ namespace OC2DIYLevelSorting
 
         private void OnDestroy()
         {
+            SceneManager.sceneLoaded -= OnSceneLoaded;
             Config.ConfigReloaded -= OnConfigReloaded;
             if (harmony != null) harmony.UnpatchSelf();
             Instance = null;

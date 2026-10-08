@@ -11,6 +11,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup><Reference Include="System" /><Reference Include="System.Core" /></ItemGroup>
-  <ItemGroup><Compile Include="BehaviorTests.cs" /><Compile Include="..\src\SortingModel.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="BehaviorTests.cs" /><Compile Include="..\src\SortingModel.cs" /><Compile Include="..\src\LevelListReturnState.cs" /></ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

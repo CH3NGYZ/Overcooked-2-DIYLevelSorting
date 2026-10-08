@@ -22,6 +22,10 @@ namespace OC2DIYLevelSorting
             Patch(harmony, typeof(T17ScrollView), "OnElementSelected", "ElementSelected", null);
             Patch(harmony, typeof(BaseMenuBehaviour), "InvokeNavigateOnUICancel", "CancelPrefix", null);
             Patch(harmony, typeof(Button), "Press", "ButtonPress", null);
+            Patch(harmony, typeof(OC2DIYLevel.DIYLevelEntryUI), "OnLevelSelected", "LevelSelected", null);
+            Patch(harmony, typeof(LoadingScreenFlow), "LoadScene", "SceneLeaving", null);
+            Patch(harmony, typeof(GameUtils), "LoadScene", "SceneLeaving", null);
+            Patch(harmony, typeof(FrontendRootMenu), "Show", null, "FrontendShown");
         }
 
         private static void Patch(Harmony harmony, Type type, string method, string prefix, string postfix)
@@ -49,6 +53,24 @@ namespace OC2DIYLevelSorting
         {
             try { SortingPlugin.Instance.AttachMenus(); }
             catch (Exception e) { Error("DIYLevelEntryUI.AddUI", "Postfix", e); }
+        }
+
+        private static void LevelSelected(string __0)
+        {
+            try { SortingPlugin.Instance.Return.Capture(__0); }
+            catch (Exception e) { Error("DIYLevelEntryUI.OnLevelSelected", "Prefix", e); }
+        }
+
+        private static void SceneLeaving(string __0)
+        {
+            try { SortingPlugin.Instance.Return.SceneLeaving(__0); }
+            catch (Exception e) { Error("LoadingScreenFlow/GameUtils.LoadScene", "Prefix", e); }
+        }
+
+        private static void FrontendShown(FrontendRootMenu __instance)
+        {
+            try { SortingPlugin.Instance.Return.FrontendShown(__instance); }
+            catch (Exception e) { Error("FrontendRootMenu.Show", "Postfix", e); }
         }
 
         private static void SetAdded(LevelSetInfoSO __0, T17Button __result)

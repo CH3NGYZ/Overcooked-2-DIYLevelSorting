@@ -12,6 +12,8 @@ using OC2DIYLevelSorting;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
+using System.Security.Cryptography;
 using DIYUI = OC2DIYLevel.UIUtils;
 
 // Test-only plugin, gated by the launcher environment; never included in the release DLL.
@@ -26,6 +28,22 @@ public sealed class UnityTests : BaseUnityPlugin
     private static string selectedScene;
     private Harmony harmony;
     private static bool forceEnglish;
+    private bool kitchenReturn;
+    private static string saveRoot;
+    private static readonly Dictionary<string, string> saveHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string> sandboxSaves = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private static readonly FieldInfo mouseDelta = AccessTools.Field(typeof(T17StandaloneInputModule), "m_CurrentMouseDelta");
+    private static void DisablePhysicalMouse(T17EventSystem system)
+    {
+        T17StandaloneInputModule input = system == null ? null : system.GetComponent<T17StandaloneInputModule>();
+        if (input == null) return;
+        input.allowMouseInput = false;
+        input.forceModuleActive = true;
+        // The original Process calls UpdateMouseKeyboardFocus even with mouse
+        // input off. A previous nonzero delta would otherwise keep deselecting UI.
+        mouseDelta.SetValue(input, 0f);
+    }
+    private static void FrontendMouseDisabled(FrontendRootMenu __instance) { DisablePhysicalMouse(__instance.CachedEventSystem); }
     private static bool ObserveScene(string __0) { selectedScene = __0; return false; }
     private static bool OverrideLanguage(ref SupportedLanguages __result)
     {
@@ -39,7 +57,17 @@ public sealed class UnityTests : BaseUnityPlugin
         output = Environment.GetEnvironmentVariable("OC2_SORTING_TEST_OUTPUT");
         string[] args = Environment.GetCommandLineArgs();
         for (int i = 0; i + 1 < args.Length; i++) if (args[i] == "-oc2SortingTestOutput") output = args[i + 1];
+        kitchenReturn = Array.IndexOf(args, "-oc2SortingTestKitchenReturn") >= 0;
         if (string.IsNullOrEmpty(output)) { enabled = false; return; }
+        harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
+        saveRoot = Path.Combine(output, "sandbox-saves");
+        Directory.CreateDirectory(saveRoot);
+        HarmonyMethod isolateSaves = new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "RedirectSaveAddress"));
+        isolateSaves.priority = Priority.Last;
+        harmony.Patch(AccessTools.Method(typeof(PCSaveManager), "GetFileAddress"), null, isolateSaves);
+        harmony.Patch(AccessTools.Method(typeof(DIYLevelSaveManager), "GetFileAddress"), null, isolateSaves);
+        harmony.Patch(AccessTools.Method(typeof(FrontendRootMenu), "Show"), null,
+            new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "FrontendMouseDisabled")));
         StartCoroutine(RunProtected());
     }
 
@@ -62,10 +90,13 @@ public sealed class UnityTests : BaseUnityPlugin
             if (failure != null || !next) break;
             yield return work.Current;
         }
-        if (harmony != null) harmony.UnpatchSelf();
         string result = failure == null ? "PASS: " + assertions + " actual Unity assertions." : failure.ToString();
         File.WriteAllText(Path.Combine(output, "result.txt"), result);
         Logger.LogInfo(result);
+        if (failure != null)
+        {
+            ScreenCapture.CaptureScreenshot(Path.Combine(output, "failure.png"));
+        }
         yield return new WaitForSecondsRealtime(2);
         Application.Quit();
     }
@@ -74,13 +105,30 @@ public sealed class UnityTests : BaseUnityPlugin
     {
         float deadline = Time.realtimeSinceStartup + 100;
         GameObject rootObject = null;
+        bool startedEngagement = false;
         while (Time.realtimeSinceStartup < deadline)
         {
+            AcknowledgeUpdateCheckError();
+            StartScreenFlow start = StartScreenFlow.Instance;
+            PlayerManager player = GameUtils.RequestManager<PlayerManager>();
+            if (!startedEngagement && start != null && player != null && !player.HasPlayer()
+                && !LoadingScreenFlow.IsLoading && SteamPlayerManager.Initialized
+                && (bool)AccessTools.Field(typeof(StartScreenFlow), "m_bCheckingForEngagement").GetValue(null))
+            {
+                // Use the native keyboard engagement/profile flow; saves already use the sandbox.
+                startedEngagement = true;
+                AccessTools.Field(typeof(StartScreenFlow), "m_bCheckingForEngagement").SetValue(null, false);
+                player.StartGameownerEngagement(ControlPadInput.PadNum.One, null, delegate(GamepadUser gamer)
+                {
+                    AccessTools.Method(typeof(StartScreenFlow), "OnEngagementFinished").Invoke(start, new object[] { gamer });
+                });
+            }
             rootObject = GameObject.Find("/Frontend/FrontendParent/FrontendRootMenu");
             if (rootObject != null && rootObject.transform.Find("FixedAspectRootCanvas/ScreenSpaceCanvas/GameOptions") != null) break;
             yield return null;
         }
         Check(rootObject != null, "Frontend scene and original GameOptions template exist");
+        Check(!SortingPlugin.Instance.Return.State.Pending, "Normal game startup does not reopen a persisted click-history menu");
         if (!DIYLevelAssetBundleManager.IsInitialized) DIYLevelAssetBundleManager.Initialize();
         Type fast = AccessTools.TypeByName("DIYLevelFastInit.FastInitPlugin");
         FieldInfo loading = fast == null ? null : AccessTools.Field(fast, "Loading");
@@ -110,8 +158,7 @@ public sealed class UnityTests : BaseUnityPlugin
                         FrontendRootMenu loadingRoot = rootObject.GetComponent<FrontendRootMenu>();
                         AccessTools.Field(typeof(BaseMenuBehaviour), "m_CurrentGamepadUser").SetValue(loadingRoot, loadingUser);
                         loadingMenu.Show(loadingUser, loadingRoot, rootObject, false);
-                        T17StandaloneInputModule loadingInput = loadingMenu.CachedEventSystem.GetComponent<T17StandaloneInputModule>();
-                        if (loadingInput != null) { loadingInput.allowMouseInput = false; loadingInput.forceModuleActive = true; }
+                        DisablePhysicalMouse(loadingMenu.CachedEventSystem);
                         // Exercise a real change even if the saved config already
                         // contains AddedTime/Descending from a previous manual run.
                         SortingPlugin.Instance.SetSort(1 - (int)loadingMethod, false);
@@ -192,6 +239,15 @@ public sealed class UnityTests : BaseUnityPlugin
         FrontendRootMenu root = rootObject.GetComponent<FrontendRootMenu>();
         GamepadUser user = GameUtils.RequireManager<PlayerManager>().GetUser(EngagementSlot.One);
         Check(user != null, "Real primary GamepadUser exists for native Show/focus tests");
+        T17EventSystem startupSystem = T17EventSystemsManager.Instance.GetEventSystemForGamepadUser(user);
+        deadline = Time.realtimeSinceStartup + 30f;
+        while (startupSystem != null && (startupSystem.IsDisabled() || T17DialogBoxManager.HasAnyOpenDialogs()) && Time.realtimeSinceStartup < deadline)
+        {
+            AcknowledgeUpdateCheckError();
+            yield return null;
+        }
+        Check(startupSystem != null && !startupSystem.IsDisabled() && !T17DialogBoxManager.HasAnyOpenDialogs(),
+            "Native frontend transition releases its input suppression before scripted menu navigation");
         AccessTools.Field(typeof(BaseMenuBehaviour), "m_CurrentGamepadUser").SetValue(root, user);
         sets.Show(user, root, rootObject, false);
         yield return new WaitForSecondsRealtime(0.6f);
@@ -206,8 +262,7 @@ public sealed class UnityTests : BaseUnityPlugin
         T17EventSystem eventSystem = sets.CachedEventSystem;
         // Scripted native events must not race the user's physical mouse on the desktop.
         // Selection still runs through the real T17EventSystem and original UI handlers.
-        T17StandaloneInputModule liveInput = eventSystem.GetComponent<T17StandaloneInputModule>();
-        if (liveInput != null) { liveInput.allowMouseInput = false; liveInput.forceModuleActive = true; }
+        DisablePhysicalMouse(eventSystem);
         yield return new WaitForSecondsRealtime(0.1f);
         GameObject firstRow = setView.Content.GetChild(0).gameObject;
         eventSystem.SetSelectedGameObject(firstRow);
@@ -311,7 +366,6 @@ public sealed class UnityTests : BaseUnityPlugin
                 yield return new WaitForSecondsRealtime(0.2f);
             }
         }
-        harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
         harmony.Patch(AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSelected"),
             new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "ObserveScene")));
         foreach (LevelInfoSO level in chosen.levelInfos)
@@ -553,6 +607,148 @@ public sealed class UnityTests : BaseUnityPlugin
         yield return new WaitForSecondsRealtime(0.5f);
         ScreenCapture.CaptureScreenshot(Path.Combine(output, "menus.png"));
         yield return new WaitForSecondsRealtime(0.3f);
+        Check(!SortingPlugin.Instance.Return.State.Pending, "Selecting levels without actually loading a kitchen does not arm return navigation");
+        levels.Hide(false, false);
+        sets.Hide(false, false);
+        LevelListReturnState returnState = SortingPlugin.Instance.Return.State;
+        returnState.Capture("removed-package", "removed-level", "test-kitchen", 1f);
+        returnState.SceneEntered("test-kitchen", true);
+        returnState.SceneLeaving("StartScreen", "test-kitchen", true, true);
+        SortingPlugin.Instance.Return.FrontendShown(root);
+        yield return new WaitForSecondsRealtime(0.4f);
+        Check(!returnState.Pending && sets.gameObject.activeInHierarchy && !levels.gameObject.activeInHierarchy,
+            "A removed package falls back to the real package list and consumes the pending return (simulated return request)");
+        sets.Hide(false, false);
+        if (kitchenReturn)
+        {
+            IEnumerator work = VerifyKitchenReturn(chosen);
+            while (work.MoveNext()) yield return work.Current;
+        }
+    }
+
+    private static string FileHash(string path)
+    {
+        if (!File.Exists(path)) return null;
+        using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path)));
+    }
+
+    private void AcknowledgeUpdateCheckError()
+    {
+        // This machine's optional HostUtilities updater can block startup with an
+        // informational release-mirror error. Acknowledge only that exact notice,
+        // through its original callback; never accept an installation or data prompt.
+        foreach (T17DialogBox dialog in Resources.FindObjectsOfTypeAll<T17DialogBox>())
+        {
+            if (!dialog.IsActive || !dialog.gameObject.activeInHierarchy || dialog.m_Title == null || dialog.m_Message == null) continue;
+            bool knownTitle = dialog.m_Title.text == "检测更新时出错" || dialog.m_Title.text == "Update Check Failed";
+            bool knownMessage = dialog.m_Message.text.Contains("资源 Release 尚未发布完整")
+                || dialog.m_Message.text.Contains("The resource release on this platform is incomplete or temporarily unavailable.");
+            if (!knownTitle || !knownMessage || dialog.m_ConfirmButton == null || !dialog.m_ConfirmButton.gameObject.activeSelf
+                || (dialog.m_DeclineButton != null && dialog.m_DeclineButton.gameObject.activeSelf)
+                || (dialog.m_CancelButton != null && dialog.m_CancelButton.gameObject.activeSelf)) continue;
+            Logger.LogInfo("Acknowledging the known informational HostUtilities update-check error for scripted testing.");
+            dialog.Confirm();
+        }
+    }
+
+    private static void RedirectSaveAddress(ref string __result)
+    {
+        if (string.IsNullOrEmpty(__result)) return;
+        string sandbox;
+        if (!sandboxSaves.TryGetValue(__result, out sandbox))
+        {
+            sandbox = Path.Combine(saveRoot, StableIdentity.Package(null, null, __result) + ".save").Replace('\\', '/');
+            saveHashes[__result] = FileHash(__result);
+            File.AppendAllText(Path.Combine(Path.GetDirectoryName(saveRoot), "save-manifest.tsv"),
+                (saveHashes[__result] == null ? "-" : saveHashes[__result].Replace("-", string.Empty)) + "\t" + __result + Environment.NewLine);
+            if (File.Exists(__result)) File.Copy(__result, sandbox);
+            sandboxSaves[__result] = sandbox;
+        }
+        __result = sandbox;
+    }
+
+    private IEnumerator VerifyKitchenReturn(LevelSetInfoSO set)
+    {
+        Check(AccessTools.Method(typeof(DIYLevelSaveManager), "GetFileAddress").Invoke(null, new object[] { -1 }).ToString().StartsWith(saveRoot.Replace('\\', '/')),
+            "Kitchen test redirects DIY save addresses to the isolated validation directory");
+        LevelInfoSO level = Array.Find(set.levelInfos, delegate(LevelInfoSO item) { return item.sceneName == "s_ha_test_0"; }) ?? set.levelInfos[0];
+        string identity = SortingPlugin.Instance.Metadata.Get(set).LevelIds[level];
+        SortingPlugin.Instance.SetSort((int)SortMethod.AddedTime, false);
+        SortingPlugin.Instance.SetSort((int)SortDirection.Descending, true);
+        ConfigEntry<bool> autoReturn = SortingPlugin.Instance.Config.Bind<bool>("Navigation", "ReturnToLevelList", true, "test");
+        autoReturn.Value = true;
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            FrontendOptionsMenu sets = (FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null);
+            FrontendRootMenu root = GameObject.Find("/Frontend/FrontendParent/FrontendRootMenu").GetComponent<FrontendRootMenu>();
+            sets.Show(root.CurrentGamepadUser, root, root.gameObject, false);
+            AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { set });
+            FrontendOptionsMenu levels = (FrontendOptionsMenu)GameAccess.LevelMenu.GetValue(null);
+            MenuView view = levels.GetComponent<MenuView>();
+            DisablePhysicalMouse(levels.CachedEventSystem);
+            levels.CachedEventSystem.SetSelectedGameObject(view.Content.Find("Level_" + level.levelName).gameObject);
+            yield return new WaitForSecondsRealtime(0.1f);
+            view.Content.Find("Level_" + level.levelName).GetComponent<T17Button>().OnSubmit(new BaseEventData(levels.CachedEventSystem));
+            Check(SortingPlugin.Instance.Return.State.LevelIdentity == identity, "Real selected-level callback captures the return bookmark");
+            DIYLevelAssetBundleManager.LoadLevelServer(level.sceneName);
+            float deadline = Time.realtimeSinceStartup + 65f;
+            while (Time.realtimeSinceStartup < deadline && (SceneManager.GetActiveScene().name != level.sceneName || LoadingScreenFlow.IsLoading || GameUtils.RequestManager<FlowControllerBase>() == null)) yield return null;
+            Check(SceneManager.GetActiveScene().name == level.sceneName && !LoadingScreenFlow.IsLoading && GameUtils.RequestManager<FlowControllerBase>() != null,
+                "Actual custom kitchen loaded and finished its loading transition, pass " + attempt);
+            Check(GameUtils.GetGameSession() != null && GameUtils.GetGameSession().DLC == DIYLevelAssetBundleManager.diyLevelDLCId,
+                "Actual loaded kitchen belongs to the DIY session");
+            InGamePauseMenu pause = Array.Find(Resources.FindObjectsOfTypeAll<InGamePauseMenu>(), delegate(InGamePauseMenu menu) { return menu.gameObject.scene.IsValid(); });
+            Check(pause != null, "Original in-game pause menu exists for the quit callback");
+            if (attempt == 1) autoReturn.Value = false;
+            AccessTools.Method(typeof(InGamePauseMenu), "OnQuitConfirmed").Invoke(pause, null);
+            deadline = Time.realtimeSinceStartup + 45f;
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                levels = GameAccess.LevelMenu.GetValue(null) as FrontendOptionsMenu;
+                if (SceneManager.GetActiveScene().name == "StartScreen" && !LoadingScreenFlow.IsLoading
+                    && (attempt == 1 || (levels != null && levels.gameObject.activeInHierarchy && !SortingPlugin.Instance.Return.State.Pending))) break;
+                yield return null;
+            }
+            Check(SceneManager.GetActiveScene().name == "StartScreen" && !LoadingScreenFlow.IsLoading, "Original kitchen quit completed its frontend scene reload");
+            yield return new WaitForSecondsRealtime(0.6f);
+            levels = GameAccess.LevelMenu.GetValue(null) as FrontendOptionsMenu;
+            if (attempt == 0)
+            {
+                Check(levels != null && levels.gameObject.activeInHierarchy && !SortingPlugin.Instance.Return.State.Pending,
+                    "Exiting a real kitchen automatically opens the prior level list exactly once");
+                view = levels.GetComponent<MenuView>();
+                Check(SortingPlugin.Instance.SelectedSet != null && SortingPlugin.Instance.Metadata.Get(SortingPlugin.Instance.SelectedSet).Identity == SortingPlugin.Instance.Metadata.Get(set).Identity,
+                    "Real kitchen return restores the original package");
+                Check(levels.CachedEventSystem.currentSelectedGameObject != null && levels.CachedEventSystem.currentSelectedGameObject.GetComponent<ClickTracker>() != null
+                    && levels.CachedEventSystem.currentSelectedGameObject.GetComponent<ClickTracker>().Identity == identity,
+                    "Real kitchen return restores focus to the clicked level; actual=" + (levels.CachedEventSystem.currentSelectedGameObject == null ? "null" : levels.CachedEventSystem.currentSelectedGameObject.name));
+                Check(SortingPlugin.Instance.Method == SortMethod.AddedTime && SortingPlugin.Instance.Direction == SortDirection.Descending,
+                    "Real kitchen return retains the saved sort method and direction");
+                CheckNavigation(view);
+                CheckLevelOrder(view, SortingPlugin.Instance.SelectedSet);
+                CheckSingleBadge(view, view.Content.Find("Level_" + level.levelName), "Actual kitchen return retains one recent green dot");
+                ScreenCapture.CaptureScreenshot(Path.Combine(output, "actual-kitchen-return.png"));
+                yield return new WaitForSecondsRealtime(0.2f);
+                levels.InvokeNavigateOnUICancel();
+                yield return new WaitForSecondsRealtime(0.2f);
+                sets = (FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null);
+                Check(!levels.gameObject.activeInHierarchy && sets.gameObject.activeInHierarchy && !SortingPlugin.Instance.Return.State.Pending,
+                    "Cancel leaves the restored list for its package menu without reopening it");
+                Check(sets.CachedEventSystem.currentSelectedGameObject == sets.GetComponent<MenuView>().Content.Find("LevelSet_" + set.levelSetName).gameObject,
+                    "Cancel from the restored level list returns focus to its original package");
+                sets.InvokeNavigateOnUICancel();
+                yield return new WaitForSecondsRealtime(0.2f);
+                Check(!sets.gameObject.activeInHierarchy, "Cancel from the restored package menu returns to the native frontend");
+            }
+            else Check((levels == null || !levels.gameObject.activeInHierarchy) && !SortingPlugin.Instance.Return.State.Pending,
+                "Disabling the option keeps the original frontend after a real kitchen quit");
+            // The original frontend may not have built the DIY menus when disabled.
+            DIYLevelEntryUI.AddUI();
+        }
+        autoReturn.Value = true;
+        foreach (KeyValuePair<string, string> item in saveHashes)
+            Check(FileHash(item.Key) == item.Value, "An isolated kitchen test leaves the original save file unchanged");
+        File.WriteAllText(Path.Combine(output, "kitchen-return-result.txt"), "Real kitchen loaded and exited twice; enabled and disabled return verified. Original save hashes unchanged.");
     }
 
     private void CheckSingleBadge(MenuView view, Transform expectedRow, string message)

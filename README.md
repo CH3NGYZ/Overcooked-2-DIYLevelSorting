@@ -6,7 +6,7 @@
 
 需要 Overcooked! 2、BepInEx 5 和 OC2DIYLevel。DIYLevelFastInit 可选。本机已验证 DIYLevel 0.10.0、FastInit 1.4.0 / 1.4.1、BepInEx 5.4.23.5、Unity 2017 / .NET Framework 3.5。
 
-1. 关闭游戏，把构建的 `bin/Release/OC2DIYLevelSorting.dll` 放入游戏的 `BepInEx/plugins/`。
+1. 从 [Releases](https://github.com/CH3NGYZ/Overcooked-2-DIYLevelSorting/releases) 下载 `OC2DIYLevelSorting.dll`（或自行构建 `bin/Release/OC2DIYLevelSorting.dll`），关闭游戏后放入游戏的 `BepInEx/plugins/`。
 2. 打开 DLC 的“更多关卡”，展开“排序方法”和“排序方向”选择选项。键鼠可点击，游戏原生提交操作展开/选择，取消操作关闭下拉并返回原控件。
 3. 选择会保存到 `BepInEx/config/<PluginGuid>.cfg`，文件名由 `src/SortingPlugin.cs` 中的 `PluginGuid` 决定。最近一次点击保存在该文件的 `History.ClickedLevels`（兼容保留旧键名，仅保存一个身份）；清空此项可以清除圆点记录。
 

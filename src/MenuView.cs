@@ -16,6 +16,7 @@ namespace OC2DIYLevelSorting
         internal LevelInfoSO Level;
         internal SortKey Key;
         internal GameObject Badge;
+        internal T17Text NameText;
     }
 
     public sealed class MenuView : MonoBehaviour
@@ -23,6 +24,7 @@ namespace OC2DIYLevelSorting
         internal FrontendOptionsMenu Menu;
         internal T17ScrollView Scroll;
         internal RectTransform Content;
+        internal RectTransform Toolbar;
         private readonly List<Row> rows = new List<Row>();
         private readonly HashSet<T17Button> tracked = new HashSet<T17Button>();
         private readonly RefreshGate gate = new RefreshGate();
@@ -42,7 +44,39 @@ namespace OC2DIYLevelSorting
             if (Content == null || Scroll == null) throw new InvalidOperationException("DIYLevel menu content/scroll missing.");
             ContentChanges observer = Content.gameObject.AddComponent<ContentChanges>();
             observer.View = this;
+            CreateToolbar();
             EnsureControls();
+        }
+
+        private void CreateToolbar()
+        {
+            RectTransform body = Menu.transform.Find("SettingsBody") as RectTransform;
+            RectTransform scrollRect = Scroll.GetComponent<RectTransform>();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(body);
+            Vector3[] corners = new Vector3[4];
+            scrollRect.GetWorldCorners(corners);
+            Vector3 topRight = body.InverseTransformPoint(corners[2]);
+            const float width = 290f;
+            const float gap = 24f;
+            const float margin = 30f;
+            float available = body.rect.xMax - topRight.x;
+            if (available < width + gap + margin)
+            {
+                float reserve = width + gap + margin - available;
+                // Reserve a right column while keeping the list's left edge in place.
+                scrollRect.sizeDelta -= new Vector2(reserve, 0);
+                scrollRect.anchoredPosition -= new Vector2(reserve * scrollRect.pivot.x, 0);
+                scrollRect.GetWorldCorners(corners);
+                topRight = body.InverseTransformPoint(corners[2]);
+            }
+            GameObject panel = new GameObject("DIYSorting_Toolbar", typeof(RectTransform));
+            panel.layer = Menu.gameObject.layer;
+            panel.transform.SetParent(body, false);
+            Toolbar = panel.GetComponent<RectTransform>();
+            Toolbar.anchorMin = Toolbar.anchorMax = new Vector2(0.5f, 0.5f);
+            Toolbar.pivot = new Vector2(0, 1);
+            Toolbar.sizeDelta = new Vector2(width, 212f);
+            Toolbar.localPosition = new Vector3(topRight.x + gap, topRight.y, 0);
         }
 
         internal void Request() { if (!applying && !clearing) gate.Request(Time.unscaledTime); }
@@ -60,12 +94,16 @@ namespace OC2DIYLevelSorting
             row.Set = set;
             row.Level = level;
             row.Key = new SortKey(Name(row), package.AddedTicks, identity);
+            Transform label = button.transform.Find(level == null ? "LevelSetName" : "Title");
+            row.NameText = label == null ? null : label.GetComponent<T17Text>();
             row.Badge = CreateBadge(button, level == null);
             rows.Add(row);
             if (level != null)
             {
                 // Keep original callbacks and callbacks from other mods intact.
                 string clickedId = identity;
+                ClickTracker clickTracker = button.gameObject.AddComponent<ClickTracker>();
+                clickTracker.Identity = identity;
                 button.onClick.AddListener(delegate
                 {
                     try { SortingPlugin.Instance.Record(clickedId); }
@@ -98,6 +136,7 @@ namespace OC2DIYLevelSorting
                 Row row = rows[i];
                 if (row.Button == null || row.Set == null) { rows.RemoveAt(i); continue; }
                 row.Key.Name = Name(row) ?? string.Empty;
+                if (row.NameText != null) row.NameText.SetNonLocalizedText(row.Key.Name);
                 RefreshBadge(row);
             }
             Request();
@@ -109,11 +148,7 @@ namespace OC2DIYLevelSorting
             CloseDropdowns(false);
             rows.Clear();
             tracked.Clear();
-            // Popups are outside Content; destroy them explicitly before the native clear.
-            if (method != null) method.DestroyPopup();
-            if (direction != null) direction.DestroyPopup();
-            method = null;
-            direction = null;
+            // The fixed toolbar and its dropdowns survive native content clears.
             GameAccess.Items(Scroll).Clear();
         }
 
@@ -145,13 +180,11 @@ namespace OC2DIYLevelSorting
                 {
                     Transform child = Content.GetChild(i);
                     if (child.name == "FastInit_Reload") { reload = child; continue; }
-                    if (child == method.transform || child == direction.transform || sorted.Contains(child)) continue;
+                    if (sorted.Contains(child)) continue;
                     fixedRows.Add(child);
                 }
                 int index = 0;
                 if (reload != null) Move(reload, index++);
-                Move(method.transform, index++);
-                Move(direction.transform, index++);
                 foreach (Transform child in fixedRows) Move(child, index++);
                 foreach (Row row in rows) { Move(row.Button.transform, index++); RefreshBadge(row); }
                 LayoutRebuilder.ForceRebuildLayoutImmediate(Content);
@@ -196,7 +229,7 @@ namespace OC2DIYLevelSorting
                 nav.selectOnUp = i == 0 ? Scroll.m_BorderSelectables.selectOnUp : selectables[i - 1];
                 nav.selectOnDown = i == selectables.Count - 1 ? Scroll.m_BorderSelectables.selectOnDown : selectables[i + 1];
                 nav.selectOnLeft = Scroll.m_BorderSelectables.selectOnLeft;
-                nav.selectOnRight = Scroll.m_BorderSelectables.selectOnRight;
+                nav.selectOnRight = method.GetComponent<Selectable>();
                 selectables[i].navigation = nav;
             }
             if (Scroll.m_BorderSelectables.selectOnDown != null && selectables.Count > 0)
@@ -215,6 +248,28 @@ namespace OC2DIYLevelSorting
                 Scroll.ScrollToEntry(selected, false);
             method.BindEventSystem(system);
             direction.BindEventSystem(system);
+            Menu.AddAllowedSelectables(method.GetComponent<Selectable>());
+            Menu.AddAllowedSelectables(direction.GetComponent<Selectable>());
+            Scroll.AddAllowedSelectables(method.GetComponent<Selectable>());
+            Scroll.AddAllowedSelectables(direction.GetComponent<Selectable>());
+            LinkToolbar(cache.Count == 0 ? null : cache[current].GetComponent<Selectable>());
+        }
+
+        private void LinkToolbar(Selectable returnTo)
+        {
+            Selectable methodButton = method.GetComponent<Selectable>();
+            Selectable directionButton = direction.GetComponent<Selectable>();
+            Navigation methodNavigation = methodButton.navigation;
+            methodNavigation.mode = Navigation.Mode.Explicit;
+            methodNavigation.selectOnUp = Scroll.m_BorderSelectables.selectOnUp;
+            methodNavigation.selectOnDown = directionButton;
+            methodNavigation.selectOnLeft = returnTo;
+            methodNavigation.selectOnRight = null;
+            methodButton.navigation = methodNavigation;
+            Navigation directionNavigation = methodNavigation;
+            directionNavigation.selectOnUp = methodButton;
+            directionNavigation.selectOnDown = returnTo;
+            directionButton.navigation = directionNavigation;
         }
 
         internal bool AcceptSelection(Selectable selectable, ref int index)
@@ -222,6 +277,7 @@ namespace OC2DIYLevelSorting
             int actual = GameAccess.Items(Scroll).IndexOf(selectable.GetComponent<RectTransform>());
             if (actual < 0) return false;
             index = actual;
+            LinkToolbar(selectable);
             if (lastSelection == selectable.gameObject && lastSelectionFrame == Time.frameCount) return false;
             lastSelection = selectable.gameObject;
             lastSelectionFrame = Time.frameCount;
@@ -307,5 +363,10 @@ namespace OC2DIYLevelSorting
         {
             if (View != null) View.NotifySelected(GetComponent<Selectable>());
         }
+    }
+
+    public sealed class ClickTracker : MonoBehaviour
+    {
+        internal string Identity;
     }
 }

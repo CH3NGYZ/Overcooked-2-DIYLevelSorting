@@ -55,6 +55,8 @@ namespace OC2DIYLevelSorting
             }
             string relativePath = string.IsNullOrEmpty(path) ? set.uid : new DirectoryInfo(path).Name;
             string baseUid = GameAccess.BaseUid == null ? null : GameAccess.BaseUid.GetValue(set) as string;
+            if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(baseUid) && string.IsNullOrEmpty(set.uid))
+                throw new InvalidOperationException("A package without a path or UID cannot be assigned a persistent identity.");
             result = new PackageMetadata();
             result.Identity = StableIdentity.Package(baseUid, set.uid, relativePath);
             if (!string.IsNullOrEmpty(path))

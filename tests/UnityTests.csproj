@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" />
+  <PropertyGroup>
+    <GameRoot Condition="'$(GameRoot)' == ''">E:\SteamLibrary\steamapps\common\Overcooked! 2</GameRoot>
+    <Managed>$(GameRoot)\Overcooked2_Data\Managed</Managed>
+    <Core>$(GameRoot)\BepInEx\core</Core>
+    <DIY>$(GameRoot)\BepInEx\plugins\OC2DIYLevel</DIY>
+    <OutputType>Library</OutputType>
+    <AssemblyName>OC2DIYLevelSorting.UnityTests</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <OutputPath>..\bin\UnityTests\</OutputPath>
+    <LangVersion>3</LangVersion>
+    <WarningLevel>4</WarningLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" /><Reference Include="System.Core" />
+    <Reference Include="BepInEx"><HintPath>$(Core)\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(Core)\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(Managed)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(Managed)\Assembly-CSharp-firstpass.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="OC2DIYLevel"><HintPath>$(DIY)\OC2DIYLevel.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="LevelEditorStub"><HintPath>$(DIY)\LevelEditorStub.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="OC2DIYLevelSorting"><HintPath>..\bin\Release\OC2DIYLevelSorting.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(Managed)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(Managed)\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(Managed)\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule"><HintPath>$(Managed)\UnityEngine.ScreenCaptureModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <ItemGroup><Compile Include="UnityTests.cs" /></ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

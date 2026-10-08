@@ -21,6 +21,7 @@ namespace OC2DIYLevelSorting
             Patch(harmony, typeof(FrontendOptionsMenu), "Hide", "HidePrefix", null);
             Patch(harmony, typeof(T17ScrollView), "OnElementSelected", "ElementSelected", null);
             Patch(harmony, typeof(BaseMenuBehaviour), "InvokeNavigateOnUICancel", "CancelPrefix", null);
+            Patch(harmony, typeof(Button), "Press", "ButtonPress", null);
         }
 
         private static void Patch(Harmony harmony, Type type, string method, string prefix, string postfix)
@@ -169,6 +170,18 @@ namespace OC2DIYLevelSorting
             }
             catch (Exception e) { Error("BaseMenuBehaviour.InvokeNavigateOnUICancel", "Prefix", e); }
             return true;
+        }
+
+        private static void ButtonPress(Button __instance)
+        {
+            try
+            {
+                // Record before dispatch so a failing original listener does not erase a click.
+                if (!__instance.IsActive() || !__instance.IsInteractable()) return;
+                ClickTracker tracker = __instance.GetComponent<ClickTracker>();
+                if (tracker != null) SortingPlugin.Instance.Record(tracker.Identity);
+            }
+            catch (Exception e) { Error("UnityEngine.UI.Button.Press", "Prefix", e); }
         }
     }
 }

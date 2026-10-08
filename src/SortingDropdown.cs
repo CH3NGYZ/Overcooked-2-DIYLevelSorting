@@ -32,7 +32,18 @@ namespace OC2DIYLevelSorting
             dropdown.view = view;
             dropdown.isDirection = isDirection;
             dropdown.trigger = button;
+            button.transform.SetParent(view.Toolbar, false);
+            RectTransform triggerRect = button.GetComponent<RectTransform>();
+            triggerRect.anchorMin = new Vector2(0, 1);
+            triggerRect.anchorMax = new Vector2(1, 1);
+            triggerRect.pivot = new Vector2(0.5f, 1);
+            triggerRect.sizeDelta = new Vector2(0, 100);
+            triggerRect.anchoredPosition = new Vector2(0, isDirection ? -112 : 0);
             dropdown.caption = button.transform.Find("Title").GetComponent<T17Text>();
+            RectTransform titleRect = dropdown.caption.GetComponent<RectTransform>();
+            titleRect.anchorMin = new Vector2(0.04f, 0);
+            titleRect.anchorMax = new Vector2(0.96f, 1);
+            titleRect.offsetMin = titleRect.offsetMax = Vector2.zero;
             dropdown.caption.resizeTextForBestFit = true;
             dropdown.caption.resizeTextMinSize = 14;
             dropdown.caption.resizeTextMaxSize = dropdown.caption.fontSize;
@@ -65,6 +76,8 @@ namespace OC2DIYLevelSorting
             blockerNavigation.mode = Navigation.Mode.None;
             blockerButton.navigation = blockerNavigation;
             blockerButton.onClick.AddListener(delegate { Close(true); });
+            view.Menu.AddAllowedSelectables(blockerButton);
+            view.Scroll.AddAllowedSelectables(blockerButton);
             blocker.SetActive(false);
 
             popup = new GameObject(name + "_Options", typeof(RectTransform), typeof(Image));
@@ -74,7 +87,7 @@ namespace OC2DIYLevelSorting
             RectTransform panel = popup.GetComponent<RectTransform>();
             panel.anchorMin = panel.anchorMax = new Vector2(0, 1);
             panel.pivot = new Vector2(0, 1);
-            float height = Mathf.Max(48f, GetComponent<RectTransform>().rect.height);
+            const float height = 64f;
             panel.sizeDelta = new Vector2(GetComponent<RectTransform>().rect.width, height * 2 + 16);
             for (int i = 0; i < 2; i++)
             {
@@ -86,6 +99,13 @@ namespace OC2DIYLevelSorting
                 });
                 choices[i] = option;
                 choiceLabels[i] = option.transform.Find("Title").GetComponent<T17Text>();
+                choiceLabels[i].resizeTextForBestFit = true;
+                choiceLabels[i].resizeTextMinSize = 14;
+                choiceLabels[i].resizeTextMaxSize = choiceLabels[i].fontSize;
+                RectTransform optionTitle = choiceLabels[i].GetComponent<RectTransform>();
+                optionTitle.anchorMin = new Vector2(0.04f, 0);
+                optionTitle.anchorMax = new Vector2(0.96f, 1);
+                optionTitle.offsetMin = optionTitle.offsetMax = Vector2.zero;
                 option.transform.SetParent(popup.transform, false);
                 RectTransform rect = option.GetComponent<RectTransform>();
                 rect.anchorMin = new Vector2(0, 1);

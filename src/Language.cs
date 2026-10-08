@@ -14,7 +14,7 @@ namespace OC2DIYLevelSorting
         internal static string DirectionLabel { get { return Text("Direction", "排序方向"); } }
         internal static string[] Methods { get { return new string[] { Text("Name", "名称"), Text("Added time", "添加时间") }; } }
         internal static string[] Directions { get { return new string[] { Text("Ascending", "正序"), Text("Descending", "倒序") }; } }
-        internal static string Caption(string label, string value) { return label + ": " + value + "  ▾"; }
+        internal static string Caption(string label, string value) { return label + ":\n" + value + "  ▾"; }
         internal static string Selected(string value) { return "✓  " + value; }
     }
 }

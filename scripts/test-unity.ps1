@@ -83,6 +83,11 @@ try {
 finally {
     # Only terminate the exact process launched by this script, never another player game.
     if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { Stop-Process -Id $gameProcess.Id; $gameProcess.WaitForExit() }
+    $remainingOwned = Get-CimInstance Win32_Process -Filter "Name = 'Overcooked2.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($runDirectory) }
+    foreach ($owned in $remainingOwned) {
+        Stop-Process -Id $owned.ProcessId
+        Wait-Process -Id $owned.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+    }
     $env:OC2_SORTING_TEST_OUTPUT = $previousOutput
     if (Test-Path -LiteralPath $targets[4]) { Copy-Item -LiteralPath $targets[4] -Destination (Join-Path $runDirectory 'bepinex.log') }
     if ($fastMoved) {
@@ -94,7 +99,12 @@ finally {
             Copy-Item -LiteralPath $entry.Backup -Destination $entry.Target
             if ((Get-FileHash -LiteralPath $entry.Target).Hash -ne $entry.Hash) { throw "Restore mismatch: $($entry.Target)" }
         }
-        elseif (Test-Path -LiteralPath $entry.Target) { Remove-Item -LiteralPath $entry.Target }
+        elseif (Test-Path -LiteralPath $entry.Target) {
+            for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                try { Remove-Item -LiteralPath $entry.Target; break }
+                catch { if ($attempt -eq 9) { throw }; Start-Sleep -Milliseconds 500 }
+            }
+        }
     }
     Write-Output "Original DLL/config/log state restored. Evidence: $runDirectory"
 }

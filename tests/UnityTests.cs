@@ -86,6 +86,11 @@ public sealed class UnityTests : BaseUnityPlugin
         FieldInfo loading = fast == null ? null : AccessTools.Field(fast, "Loading");
         int observedLoaded = -1;
         bool switchedWhileLoading = false;
+        int stableLoadingFrames = 0;
+        int stableLoadingAppends = 0;
+        SortMethod loadingMethod = SortingPlugin.Instance.Method;
+        SortDirection loadingDirection = SortingPlugin.Instance.Direction;
+        SortingDropdown stableMethodControl = null;
         while (Time.realtimeSinceStartup < deadline && loading != null && (bool)loading.GetValue(null))
         {
             if (DIYLevelAssetBundleManager.IsInitialized)
@@ -95,14 +100,38 @@ public sealed class UnityTests : BaseUnityPlugin
                 if (count > 0 && count != observedLoaded)
                 {
                     observedLoaded = count;
-                    SortingPlugin.Instance.SetSort(count % 2, false);
-                    SortingPlugin.Instance.SetSort(count % 2, true);
-                    switchedWhileLoading = true;
+                    if (!switchedWhileLoading)
+                    {
+                        SortingPlugin.Instance.SetSort(1, false);
+                        SortingPlugin.Instance.SetSort(1, true);
+                        loadingMethod = SortingPlugin.Instance.Method;
+                        loadingDirection = SortingPlugin.Instance.Direction;
+                        MenuView loadingView = ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).GetComponent<MenuView>();
+                        stableMethodControl = loadingView.Toolbar.GetChild(0).GetComponent<SortingDropdown>();
+                        switchedWhileLoading = true;
+                    }
+                    else stableLoadingAppends++;
+                }
+                if (switchedWhileLoading)
+                {
+                    MenuView loadingView = ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).GetComponent<MenuView>();
+                    if (loadingView.Toolbar.GetChild(0).GetComponent<SortingDropdown>() != stableMethodControl)
+                        throw new Exception("Dropdown control was recreated during FastInit append.");
+                    if (SortingPlugin.Instance.Method != loadingMethod || SortingPlugin.Instance.Direction != loadingDirection)
+                        throw new Exception("Sorting configuration reset during FastInit append.");
+                    string expected = Language.Caption(Language.MethodLabel, Language.Methods[(int)loadingMethod]);
+                    if (stableMethodControl.transform.Find("Title").GetComponent<T17Text>().text != expected)
+                        throw new Exception("Sorting caption reset during FastInit append.");
+                    stableLoadingFrames++;
                 }
             }
             yield return null;
         }
-        if (fast != null) Check(switchedWhileLoading, "Sorting changed during the real FastInit loading coroutine");
+        if (fast != null)
+        {
+            Check(switchedWhileLoading, "Sorting changed once during the real FastInit loading coroutine");
+            Check(stableLoadingFrames > 0 && stableLoadingAppends > 0, "Dropdown identity, caption and saved selection stay stable across " + stableLoadingFrames + " frames and " + stableLoadingAppends + " further appends");
+        }
         Check(DIYLevelAssetBundleManager.IsInitialized, "DIYLevel initialized through the installed manager");
         Logger.LogInfo("FastInit=" + (fast != null));
         // Let the native frontend finish its initial activation before retaining menu objects.
@@ -118,6 +147,7 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(levels.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Two dropdown controls in level menu");
         Check(setView.Toolbar.parent == sets.transform.Find("SettingsBody") && !setView.Toolbar.IsChildOf(setView.Content), "Sorting toolbar is outside the scrolling content");
         Check(setView.Toolbar.childCount == 2, "Right toolbar holds exactly two fixed controls");
+        SortingDropdown originalMethod = setView.Toolbar.GetChild(0).GetComponent<SortingDropdown>();
         DIYLevelEntryUI.AddUI();
         Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Repeated AddUI has no duplicate dropdowns");
         List<KeyValuePair<string, LevelSetInfoSO>> business = DIYLevelAssetBundleManager.levelSetInfos;
@@ -151,18 +181,24 @@ public sealed class UnityTests : BaseUnityPlugin
         setView.Scroll.verticalNormalizedPosition = 1;
         SortingDropdown dropdown = setView.Toolbar.Find("DIYSorting_Method").GetComponent<SortingDropdown>();
         T17EventSystem eventSystem = sets.CachedEventSystem;
+        // Scripted native events must not race the user's physical mouse on the desktop.
+        // Selection still runs through the real T17EventSystem and original UI handlers.
+        T17StandaloneInputModule liveInput = eventSystem.GetComponent<T17StandaloneInputModule>();
+        if (liveInput != null) { liveInput.allowMouseInput = false; liveInput.forceModuleActive = true; }
+        yield return new WaitForSecondsRealtime(0.1f);
         GameObject firstRow = setView.Content.GetChild(0).gameObject;
         eventSystem.SetSelectedGameObject(firstRow);
-        yield return null;
+        yield return new WaitForSecondsRealtime(0.1f);
         AxisEventData right = new AxisEventData(eventSystem);
         right.moveDir = MoveDirection.Right;
         ExecuteEvents.Execute(firstRow, right, ExecuteEvents.moveHandler);
-        yield return null;
+        yield return new WaitForSecondsRealtime(0.1f);
+        Logger.LogInfo("Right focus diagnostics: selected=" + (eventSystem.currentSelectedGameObject == null ? "null" : eventSystem.currentSelectedGameObject.name) + ", pending=" + (eventSystem.GetPendingSelectedGameObject() == null ? "null" : eventSystem.GetPendingSelectedGameObject().name));
         Check(eventSystem.currentSelectedGameObject == dropdown.gameObject, "Native right navigation reaches fixed toolbar");
         AxisEventData left = new AxisEventData(eventSystem);
         left.moveDir = MoveDirection.Left;
         ExecuteEvents.Execute(dropdown.gameObject, left, ExecuteEvents.moveHandler);
-        yield return null;
+        yield return new WaitForSecondsRealtime(0.1f);
         Check(eventSystem.currentSelectedGameObject == firstRow, "Native left navigation returns to the selected list row");
         T17Button trigger = dropdown.GetComponent<T17Button>();
         Logger.LogInfo("Dropdown diagnostics: active=" + trigger.gameObject.activeInHierarchy + ", enabled=" + trigger.enabled + ", interactable=" + trigger.interactable + ", IsInteractable=" + trigger.IsInteractable() + ", menu=" + sets.gameObject.activeInHierarchy);
@@ -174,6 +210,7 @@ public sealed class UnityTests : BaseUnityPlugin
         ScreenCapture.CaptureScreenshot(Path.Combine(output, "before-dropdown-check.png"));
         yield return new WaitForSecondsRealtime(0.2f);
         Check(popup.gameObject.activeSelf && popup.childCount == 2, "Submit opens a real two-option dropdown list");
+        CheckRaycast(eventSystem, popup.GetChild(0).GetComponent<T17Button>(), "Popup option is reachable through the real UI raycaster");
         foreach (Transform option in popup)
         {
             RectTransform textRect = option.Find("Title") as RectTransform;
@@ -186,7 +223,7 @@ public sealed class UnityTests : BaseUnityPlugin
                 Check(local.x >= optionRect.rect.xMin - 0.1f && local.x <= optionRect.rect.xMax + 0.1f, "Option label stays inside its narrow dropdown row");
             }
         }
-        Check(sets.CachedEventSystem.currentSelectedGameObject.transform.parent == popup, "Native focus enters dropdown choices");
+        Check(sets.CachedEventSystem.currentSelectedGameObject != null && sets.CachedEventSystem.currentSelectedGameObject.transform.parent == popup, "Native focus enters dropdown choices");
         ScreenCapture.CaptureScreenshot(Path.Combine(output, "dropdown.png"));
         yield return new WaitForSecondsRealtime(0.3f);
         sets.InvokeNavigateOnUICancel();
@@ -214,6 +251,12 @@ public sealed class UnityTests : BaseUnityPlugin
         MenuView levelView = levels.GetComponent<MenuView>();
         Check(levelView.Content.childCount == chosen.levelInfos.Length, "Original package selection contains only its own levels");
         CheckNavigation(levelView);
+        for (int method = 0; method < 2; method++) for (int direction = 0; direction < 2; direction++)
+        {
+            SortingPlugin.Instance.SetSort(method, false);
+            SortingPlugin.Instance.SetSort(direction, true);
+            CheckLevelOrder(levelView, chosen);
+        }
         harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
         harmony.Patch(AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSelected"),
             new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "ObserveScene")));
@@ -261,10 +304,36 @@ public sealed class UnityTests : BaseUnityPlugin
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
         yield return null;
         T17Button failing = levels.GetComponent<MenuView>().Content.Find("Level_Same Name").GetComponent<T17Button>();
+        // This fixture deliberately removes the appended history listener: only the
+        // production Press prefix can record a click before the first handler throws.
+        failing.onClick = new Button.ButtonClickedEvent();
         failing.onClick.AddListener(delegate { throw new InvalidOperationException("Expected test listener failure"); });
         try { failing.OnSubmit(new BaseEventData(levels.CachedEventSystem)); }
         catch (InvalidOperationException) { }
         Check(SortingPlugin.Instance.History.Contains(bId), "A failing original listener still leaves a recorded click");
+        LevelSetInfoSO updated = Fixture("Updated Name", "shared_scene", "fixture-b-v2");
+        GameAccess.BaseUid.SetValue(updated, "fixture-b");
+        int updateIndex = business.FindIndex(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateB; });
+        business[updateIndex] = new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, updated);
+        if (fast != null)
+        {
+            AccessTools.Field(fast, "_builtCount").SetValue(null, -1);
+            AccessTools.Method(fast, "HealLevelSetButtons").Invoke(null, null);
+        }
+        else
+        {
+            DIYUI.ClearAllMenuContent(sets);
+            foreach (KeyValuePair<string, LevelSetInfoSO> pair in business) addSet.Invoke(null, new object[] { pair.Value });
+        }
+        setView.Flush();
+        Check(SortingPlugin.Instance.Metadata.Get(updated).LevelIds[updated.levelInfos[0]] == bId,
+            "Metadata replacement at the same business index preserves baseUID click identity");
+        AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { updated });
+        yield return null;
+        Check(levels.GetComponent<MenuView>().Content.childCount == 1, "Single-level replacement remains a single visible row");
+        Check(levels.GetComponent<MenuView>().Content.GetChild(0).Find("DIYSorting_Clicked").gameObject.activeSelf,
+            "Updated package restores the clicked circle without using the changed display name");
+        business.RemoveAll(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == updated; });
         business.RemoveAll(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateB; });
 
         // Exercise FastInit's actual repair, reload-button state and hot-sync entry when present.
@@ -290,6 +359,11 @@ public sealed class UnityTests : BaseUnityPlugin
         else Check(setView.Content.Find("FastInit_Reload") == null, "Sorting operates when FastInit is absent");
         DIYUI.ClearAllMenuContent(sets);
         Check(setView.Content.childCount == 0 && setView.Toolbar.childCount == 2, "Empty package list retains two fixed controls outside content");
+        Check(setView.Toolbar.GetChild(0).GetComponent<SortingDropdown>() == originalMethod, "ClearAllMenuContent preserves the original fixed control object");
+        levels.Hide(false, false);
+        sets.Show(user, root, rootObject, false);
+        yield return new WaitForSecondsRealtime(0.2f);
+        Check(sets.CachedEventSystem.currentSelectedGameObject == originalMethod.gameObject, "Empty list can focus the fixed sorting controls");
         foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot) addSet.Invoke(null, new object[] { pair.Value });
         setView.Flush();
         Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Full clear/rebuild preserves exactly two controls");
@@ -367,5 +441,34 @@ public sealed class UnityTests : BaseUnityPlugin
             Check(cached[i] == view.Content.GetChild(i), "Cache index matches display " + i);
             if (i + 1 < cached.Count) Check(cached[i].GetComponent<Selectable>().navigation.selectOnDown == cached[i + 1].GetComponent<Selectable>(), "Down navigation matches next row " + i);
         }
+    }
+
+    private void CheckLevelOrder(MenuView view, LevelSetInfoSO set)
+    {
+        PackageMetadata metadata = SortingPlugin.Instance.Metadata.Get(set);
+        Dictionary<string, SortKey> keys = new Dictionary<string, SortKey>();
+        foreach (LevelInfoSO level in set.levelInfos)
+            keys["Level_" + level.levelName] = new SortKey(DIYUI.GetLocalizedText(level.levelName, level.levelNameZH), metadata.AddedTicks, metadata.LevelIds[level]);
+        SortKeyComparer comparer = new SortKeyComparer(SortingPlugin.Instance.Method, SortingPlugin.Instance.Direction,
+            System.Globalization.CultureInfo.GetCultureInfo(Localization.GetLanguage() == SupportedLanguages.Chinese ? "zh-CN" : "en-US"));
+        SortKey previous = null;
+        for (int i = 0; i < view.Content.childCount; i++)
+        {
+            SortKey current = keys[view.Content.GetChild(i).name];
+            Check(previous == null || comparer.Compare(previous, current) <= 0, "Actual level sibling order matches " + SortingPlugin.Instance.Method + "/" + SortingPlugin.Instance.Direction);
+            previous = current;
+        }
+    }
+
+    private void CheckRaycast(T17EventSystem system, T17Button button, string message)
+    {
+        Canvas canvas = button.GetComponentInParent<Canvas>();
+        Camera camera = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+        RectTransform rect = button.GetComponent<RectTransform>();
+        PointerEventData pointer = new PointerEventData(system);
+        pointer.position = RectTransformUtility.WorldToScreenPoint(camera, rect.TransformPoint(rect.rect.center));
+        List<RaycastResult> hits = new List<RaycastResult>();
+        system.RaycastAll(pointer, hits);
+        Check(hits.Count > 0 && hits[0].gameObject.GetComponentInParent<T17Button>() == button, message);
     }
 }

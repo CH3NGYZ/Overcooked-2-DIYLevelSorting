@@ -253,6 +253,15 @@ namespace OC2DIYLevelSorting
             Scroll.AddAllowedSelectables(method.GetComponent<Selectable>());
             Scroll.AddAllowedSelectables(direction.GetComponent<Selectable>());
             LinkToolbar(cache.Count == 0 ? null : cache[current].GetComponent<Selectable>());
+            if (system != null && Menu.isActiveAndEnabled)
+            {
+                GameObject pending = system.GetPendingSelectedGameObject();
+                GameObject effective = pending == null ? selected : pending;
+                if (cache.Count == 0 && !method.OwnsSelection(effective) && !direction.OwnsSelection(effective))
+                    system.SetSelectedGameObject(method.gameObject);
+                else if (selected == null && pending == null && cache.Count > 0)
+                    system.SetSelectedGameObject(cache[current].gameObject);
+            }
         }
 
         private void LinkToolbar(Selectable returnTo)

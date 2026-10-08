@@ -173,6 +173,11 @@ namespace OC2DIYLevelSorting
             return true;
         }
 
+        internal bool OwnsSelection(GameObject selected)
+        {
+            return selected != null && (selected == gameObject || (popup != null && selected.transform.IsChildOf(popup.transform)));
+        }
+
         internal void DestroyPopup()
         {
             Close(false);

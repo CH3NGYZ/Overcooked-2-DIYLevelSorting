@@ -137,6 +137,17 @@ public sealed class UnityTests : BaseUnityPlugin
         }
         if (fast != null)
         {
+            // The last append and Loading=false can happen in the same frame.
+            // Observe the completion frame too, rather than losing that append
+            // when a small installation finishes between coroutine resumes.
+            if (switchedWhileLoading)
+            {
+                MenuView completedView = ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).GetComponent<MenuView>();
+                AssertStableControls(completedView, stableMethodControl, stableDirectionControl, loadingMethod, loadingDirection);
+                stableLoadingAppends += DIYLevelAssetBundleManager.levelSetInfos.Count - observedLoaded;
+                stableLoadingFrames++;
+                if (completedView.Menu.isActiveAndEnabled) visibleLoadingFrames++;
+            }
             Check(switchedWhileLoading, "Sorting changed once during the real FastInit loading coroutine");
             Check(stableLoadingFrames > 0 && stableLoadingAppends > 0, "Both dropdown identities, captions and saved selections stay stable across " + stableLoadingFrames + " frames and " + stableLoadingAppends + " further appends");
             Check(visibleLoadingFrames > 0, "Sorting toolbar stays stable on the visible menu during " + visibleLoadingFrames + " loading frames");
@@ -166,8 +177,10 @@ public sealed class UnityTests : BaseUnityPlugin
         foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot)
         {
             FileInfo[] info = new DirectoryInfo(pair.Key).GetFiles("info*");
-            Check(SortingPlugin.Instance.Metadata.Get(pair.Value).AddedTicks == info[0].CreationTimeUtc.Ticks,
-                "Added time equals actual info* CreationTimeUtc: " + new DirectoryInfo(pair.Key).Name);
+            Check(SortingPlugin.Instance.Metadata.Get(pair.Value).AddedTicks == info[0].LastWriteTimeUtc.Ticks,
+                "Added time equals actual info* LastWriteTimeUtc: " + new DirectoryInfo(pair.Key).Name);
+            Check(SortingPlugin.Instance.Metadata.Get(pair.Value).LevelTimes.Count == 0,
+                "Package listing does not pre-read level file times: " + new DirectoryInfo(pair.Key).Name);
         }
         for (int method = 0; method < 2; method++) for (int direction = 0; direction < 2; direction++)
         {
@@ -255,21 +268,58 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(SortingPlugin.Instance.Direction == SortDirection.Ascending && !directionPopup.gameObject.activeSelf, "Mouse click selects direction in the fixed dropdown");
 
         // Follow the original package callback into the real level menu.
-        LevelSetInfoSO chosen = snapshot[0].Value;
+        KeyValuePair<string, LevelSetInfoSO> chosenPair = snapshot.Find(delegate(KeyValuePair<string, LevelSetInfoSO> pair)
+        {
+            return string.Equals(new DirectoryInfo(pair.Key).Name, "littleHa", StringComparison.OrdinalIgnoreCase);
+        });
+        LevelSetInfoSO chosen = chosenPair.Value ?? snapshot[0].Value;
+        if (chosenPair.Value != null) Check(chosen.levelInfos.Length == 8, "littleHa exposes the eight installed levels reported by the player");
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { chosen });
         yield return new WaitForSecondsRealtime(0.3f);
         MenuView levelView = levels.GetComponent<MenuView>();
         Check(levelView.Content.childCount == chosen.levelInfos.Length, "Original package selection contains only its own levels");
         CheckNavigation(levelView);
+        HashSet<long> chosenTimes = new HashSet<long>();
+        foreach (LevelInfoSO level in chosen.levelInfos)
+        {
+            long expectedTime = ExpectedLevelTime(chosen, level);
+            chosenTimes.Add(expectedTime);
+            Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(chosen, level) == expectedTime,
+                "Level time comes from its own scene file: " + level.sceneName);
+        }
+        if (chosenPair.Value != null) Check(chosenTimes.Count == 8, "littleHa's eight distinct resource modification times remain distinct");
+        string[] ascendingRows = null;
         for (int method = 0; method < 2; method++) for (int direction = 0; direction < 2; direction++)
         {
             SortingPlugin.Instance.SetSort(method, false);
             SortingPlugin.Instance.SetSort(direction, true);
             CheckLevelOrder(levelView, chosen);
+            if (method == (int)SortMethod.AddedTime && chosenTimes.Count == chosen.levelInfos.Length)
+            {
+                if (direction == (int)SortDirection.Ascending)
+                {
+                    ascendingRows = new string[levelView.Content.childCount];
+                    for (int i = 0; i < ascendingRows.Length; i++) ascendingRows[i] = levelView.Content.GetChild(i).name;
+                }
+                else for (int i = 0; i < ascendingRows.Length; i++)
+                    Check(levelView.Content.GetChild(i).name == ascendingRows[ascendingRows.Length - i - 1],
+                        "Reversing added-time direction reverses the real level row " + i);
+                List<string> ordered = new List<string>();
+                foreach (Transform row in levelView.Content) ordered.Add(row.name);
+                File.AppendAllText(Path.Combine(output, "level-added-time-order.txt"), chosen.levelSetName + "/" + (SortDirection)direction + ": " + string.Join(", ", ordered.ToArray()) + Environment.NewLine);
+                ScreenCapture.CaptureScreenshot(Path.Combine(output, "level-time-" + (SortDirection)direction + ".png"));
+                yield return new WaitForSecondsRealtime(0.2f);
+            }
         }
         harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
         harmony.Patch(AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSelected"),
             new HarmonyMethod(AccessTools.Method(typeof(UnityTests), "ObserveScene")));
+        foreach (LevelInfoSO level in chosen.levelInfos)
+        {
+            selectedScene = null;
+            levelView.Content.Find("Level_" + level.levelName).GetComponent<T17Button>().OnSubmit(new BaseEventData(levels.CachedEventSystem));
+            Check(selectedScene == level.sceneName, "Each time-sorted row retains its original scene callback: " + level.sceneName);
+        }
         LevelInfoSO clicked = chosen.levelInfos[0];
         T17Button levelButton = levelView.Content.Find("Level_" + clicked.levelName).GetComponent<T17Button>();
         bool otherListener = false;
@@ -296,10 +346,23 @@ public sealed class UnityTests : BaseUnityPlugin
         LevelSetInfoSO duplicateB = Fixture("Same Name", "shared_scene", "fixture-b");
         LevelInfoSO second = ScriptableObject.CreateInstance<LevelInfoSO>();
         second.levelName = second.levelNameZH = "Other Level";
-        second.sceneName = "other_scene";
+        second.sceneName = "OTHER_SCENE";
         duplicateB.levelInfos = new LevelInfoSO[] { duplicateB.levelInfos[0], second };
+        string timeFixtureDirectory = Path.Combine(output, "time-fixture");
+        Directory.CreateDirectory(timeFixtureDirectory);
+        string fixtureInfo = Path.Combine(timeFixtureDirectory, "info_fixture");
+        string fixtureScene = Path.Combine(timeFixtureDirectory, "shared_scene");
+        string fixtureOtherScene = Path.Combine(timeFixtureDirectory, "other_scene");
+        File.WriteAllText(fixtureInfo, "metadata timestamp fixture; no AssetBundle load");
+        File.WriteAllText(fixtureScene, "scene timestamp fixture; no AssetBundle load");
+        File.WriteAllText(fixtureOtherScene, "scene timestamp fixture; no AssetBundle load");
+        DateTime oldTime = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+        DateTime newTime = oldTime.AddDays(20);
+        File.SetLastWriteTimeUtc(fixtureInfo, oldTime.AddDays(1));
+        File.SetLastWriteTimeUtc(fixtureScene, oldTime);
+        File.SetLastWriteTimeUtc(fixtureOtherScene, oldTime.AddDays(10));
         business.Add(new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, duplicateA));
-        business.Add(new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, duplicateB));
+        business.Add(new KeyValuePair<string, LevelSetInfoSO>(timeFixtureDirectory, duplicateB));
         MethodInfo addSet = AccessTools.Method(typeof(DIYLevelEntryUI), "AddLevelSetButton");
         T17Button aButton = (T17Button)addSet.Invoke(null, new object[] { duplicateA });
         T17Button bButton = (T17Button)addSet.Invoke(null, new object[] { duplicateB });
@@ -320,6 +383,32 @@ public sealed class UnityTests : BaseUnityPlugin
         // Failure in the original onClick event cannot prevent the requested click history.
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
         yield return null;
+        Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, duplicateB.levelInfos[0]) == oldTime.Ticks,
+            "A same-named scene reads the selected package's own file");
+        Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, second) == oldTime.AddDays(10).Ticks,
+            "Mixed-case scene names resolve the installed loader's lowercase resource file");
+        File.SetLastWriteTimeUtc(fixtureScene, newTime);
+        Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, duplicateB.levelInfos[0]) == oldTime.Ticks,
+            "File times are cached within a level menu, not reread on every sort");
+        AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
+        Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, duplicateB.levelInfos[0]) == newTime.Ticks,
+            "Reopening a level menu refreshes a changed scene file timestamp");
+        SortingPlugin.Instance.SetSort((int)SortMethod.AddedTime, false);
+        SortingPlugin.Instance.SetSort((int)SortDirection.Ascending, true);
+        CheckLevelOrder(levelView, duplicateB);
+        Check(levelView.Content.GetChild(0).name == "Level_Other Level", "Rebuilt rows sort by the refreshed file times");
+        File.Delete(fixtureOtherScene);
+        AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
+        Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, second) == 0,
+            "Missing scene files use minimum time rather than the package time");
+        CheckLevelOrder(levelView, duplicateB);
+        File.WriteAllText(fixtureOtherScene, "restored fixture");
+        File.SetLastWriteTimeUtc(fixtureOtherScene, newTime);
+        AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
+        string tiedFirst = levelView.Content.GetChild(0).name;
+        SortingPlugin.Instance.SetSort((int)SortDirection.Descending, true);
+        Check(levelView.Content.GetChild(0).name == tiedFirst, "Equal file times keep stable identity order across directions");
+        CheckLevelOrder(levelView, duplicateB);
         T17Button failing = levels.GetComponent<MenuView>().Content.Find("Level_Same Name").GetComponent<T17Button>();
         // This fixture deliberately removes the appended history listener: only the
         // production Press prefix can record a click before the first handler throws.
@@ -357,7 +446,8 @@ public sealed class UnityTests : BaseUnityPlugin
         LevelSetInfoSO updated = Fixture("Updated Name", "shared_scene", "fixture-b-v2");
         GameAccess.BaseUid.SetValue(updated, "fixture-b");
         int updateIndex = business.FindIndex(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateB; });
-        business[updateIndex] = new KeyValuePair<string, LevelSetInfoSO>(snapshot[0].Key, updated);
+        File.SetLastWriteTimeUtc(fixtureInfo, newTime);
+        business[updateIndex] = new KeyValuePair<string, LevelSetInfoSO>(timeFixtureDirectory, updated);
         if (fast != null)
         {
             AccessTools.Field(fast, "_builtCount").SetValue(null, -1);
@@ -371,6 +461,8 @@ public sealed class UnityTests : BaseUnityPlugin
         setView.Flush();
         Check(SortingPlugin.Instance.Metadata.Get(updated).LevelIds[updated.levelInfos[0]] == bId,
             "Metadata replacement at the same business index preserves baseUID click identity");
+        Check(SortingPlugin.Instance.Metadata.Get(updated).AddedTicks == newTime.Ticks,
+            "Package refresh rereads the updated info* file modification time");
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { updated });
         yield return null;
         Check(levels.GetComponent<MenuView>().Content.childCount == 1, "Single-level replacement remains a single visible row");
@@ -539,7 +631,7 @@ public sealed class UnityTests : BaseUnityPlugin
         PackageMetadata metadata = SortingPlugin.Instance.Metadata.Get(set);
         Dictionary<string, SortKey> keys = new Dictionary<string, SortKey>();
         foreach (LevelInfoSO level in set.levelInfos)
-            keys["Level_" + level.levelName] = new SortKey(DIYUI.GetLocalizedText(level.levelName, level.levelNameZH), metadata.AddedTicks, metadata.LevelIds[level]);
+            keys["Level_" + level.levelName] = new SortKey(DIYUI.GetLocalizedText(level.levelName, level.levelNameZH), ExpectedLevelTime(set, level), metadata.LevelIds[level]);
         SortKeyComparer comparer = new SortKeyComparer(SortingPlugin.Instance.Method, SortingPlugin.Instance.Direction,
             System.Globalization.CultureInfo.GetCultureInfo(Localization.GetLanguage() == SupportedLanguages.Chinese ? "zh-CN" : "en-US"));
         SortKey previous = null;
@@ -549,6 +641,14 @@ public sealed class UnityTests : BaseUnityPlugin
             Check(previous == null || comparer.Compare(previous, current) <= 0, "Actual level sibling order matches " + SortingPlugin.Instance.Method + "/" + SortingPlugin.Instance.Direction);
             previous = current;
         }
+    }
+
+    private static long ExpectedLevelTime(LevelSetInfoSO set, LevelInfoSO level)
+    {
+        KeyValuePair<string, LevelSetInfoSO> pair = DIYLevelAssetBundleManager.levelSetInfos.Find(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == set; });
+        if (string.IsNullOrEmpty(pair.Key) || string.IsNullOrEmpty(level.sceneName)) return 0;
+        FileInfo file = new FileInfo(Path.Combine(pair.Key, level.sceneName.ToLowerInvariant()));
+        return file.Exists ? file.LastWriteTimeUtc.Ticks : 0;
     }
 
     private void CheckRaycast(T17EventSystem system, T17Button button, string message)

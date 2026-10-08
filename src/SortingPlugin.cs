@@ -43,7 +43,7 @@ namespace OC2DIYLevelSorting
                 Config.ConfigReloaded += OnConfigReloaded;
                 harmony = new Harmony(PluginGuid);
                 Patches.Install(harmony);
-                Logger.LogInfo("Sorting enabled; metadata uses info* CreationTimeUtc. DIYLevel=" + typeof(OC2DIYLevel.DIYLevelEntryUI).Assembly.GetName().Version);
+                Logger.LogInfo("Sorting enabled; metadata uses info*/scene file LastWriteTimeUtc. DIYLevel=" + typeof(OC2DIYLevel.DIYLevelEntryUI).Assembly.GetName().Version);
             }
             catch (Exception e)
             {

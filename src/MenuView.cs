@@ -93,7 +93,8 @@ namespace OC2DIYLevelSorting
             row.Button = button;
             row.Set = set;
             row.Level = level;
-            row.Key = new SortKey(Name(row), package.AddedTicks, identity);
+            long addedTicks = level == null ? package.AddedTicks : SortingPlugin.Instance.Metadata.GetLevelAddedTicks(set, level);
+            row.Key = new SortKey(Name(row), addedTicks, identity);
             Transform label = button.transform.Find(level == null ? "LevelSetName" : "Title");
             row.NameText = label == null ? null : label.GetComponent<T17Text>();
             row.Badge = CreateBadge(button, level == null);

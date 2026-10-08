@@ -9,7 +9,9 @@ namespace OC2DIYLevelSorting
     {
         internal string Identity;
         internal long AddedTicks;
+        internal string DirectoryPath;
         internal readonly Dictionary<LevelInfoSO, string> LevelIds = new Dictionary<LevelInfoSO, string>();
+        internal readonly Dictionary<string, long> LevelTimes = new Dictionary<string, long>(StringComparer.Ordinal);
     }
 
     internal sealed class MetadataResolver
@@ -25,6 +27,38 @@ namespace OC2DIYLevelSorting
             cache.Clear();
             indexedCount = 0;
             indexedList = null;
+        }
+
+        internal void InvalidateLevelTimes(LevelSetInfoSO set)
+        {
+            PackageMetadata metadata;
+            if (set != null && cache.TryGetValue(set, out metadata)) metadata.LevelTimes.Clear();
+        }
+
+        internal long GetLevelAddedTicks(LevelSetInfoSO set, LevelInfoSO level)
+        {
+            PackageMetadata metadata = Get(set);
+            // Match the installed loader's asset name, not the localized display name.
+            string scene = (level.sceneName ?? string.Empty).ToLowerInvariant();
+            long ticks;
+            if (metadata.LevelTimes.TryGetValue(scene, out ticks)) return ticks;
+            ticks = string.IsNullOrEmpty(metadata.DirectoryPath) ? 0
+                : ReadModifiedTime(Path.Combine(metadata.DirectoryPath, scene));
+            metadata.LevelTimes[scene] = ticks;
+            return ticks;
+        }
+
+        private static long ReadModifiedTime(string path)
+        {
+            try
+            {
+                FileInfo file = new FileInfo(path);
+                if (file.Exists) return file.LastWriteTimeUtc.Ticks;
+                SortingPlugin.Instance.Warn("No resource file; using minimum added time: " + path);
+            }
+            catch (IOException e) { SortingPlugin.Instance.Warn("Reading modification time failed: " + e.Message); }
+            catch (UnauthorizedAccessException e) { SortingPlugin.Instance.Warn("Reading modification time failed: " + e.Message); }
+            return 0;
         }
 
         private void Index()
@@ -59,17 +93,18 @@ namespace OC2DIYLevelSorting
                 throw new InvalidOperationException("A package without a path or UID cannot be assigned a persistent identity.");
             result = new PackageMetadata();
             result.Identity = StableIdentity.Package(baseUid, set.uid, relativePath);
+            result.DirectoryPath = path;
             if (!string.IsNullOrEmpty(path))
             {
                 try
                 {
                     // Match DIYLevel's info* metadata bundle selection; no bundles are loaded here.
                     FileInfo[] files = new DirectoryInfo(path).GetFiles("info*");
-                    if (files.Length != 0) result.AddedTicks = files[0].CreationTimeUtc.Ticks;
+                    if (files.Length != 0) result.AddedTicks = ReadModifiedTime(files[0].FullName);
                     else SortingPlugin.Instance.Warn("No info* file; using minimum added time: " + relativePath);
                 }
-                catch (IOException e) { SortingPlugin.Instance.Warn("Reading creation time failed: " + e.Message); }
-                catch (UnauthorizedAccessException e) { SortingPlugin.Instance.Warn("Reading creation time failed: " + e.Message); }
+                catch (IOException e) { SortingPlugin.Instance.Warn("Reading modification time failed: " + e.Message); }
+                catch (UnauthorizedAccessException e) { SortingPlugin.Instance.Warn("Reading modification time failed: " + e.Message); }
             }
             Dictionary<string, int> occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
             if (set.levelInfos != null)

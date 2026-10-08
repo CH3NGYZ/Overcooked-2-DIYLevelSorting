@@ -75,7 +75,11 @@ namespace OC2DIYLevelSorting
 
         private static void SelectSet(LevelSetInfoSO __0)
         {
-            try { SortingPlugin.Instance.SelectedSet = __0; }
+            try
+            {
+                SortingPlugin.Instance.SelectedSet = __0;
+                SortingPlugin.Instance.Metadata.InvalidateLevelTimes(__0);
+            }
             catch (Exception e) { Error("DIYLevelEntryUI.OnLevelSetSelected", "Prefix", e); }
         }
 
@@ -94,6 +98,7 @@ namespace OC2DIYLevelSorting
                 {
                     view.BeforeClear();
                     if (__0 == GameAccess.SetMenu.GetValue(null) as FrontendOptionsMenu) SortingPlugin.Instance.Metadata.Invalidate();
+                    else SortingPlugin.Instance.Metadata.InvalidateLevelTimes(SortingPlugin.Instance.SelectedSet);
                 }
             }
             catch (Exception e) { Error("UIUtils.ClearAllMenuContent", "Prefix", e); }

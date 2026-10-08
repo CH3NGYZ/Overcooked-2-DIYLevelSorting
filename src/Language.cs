@@ -3,7 +3,7 @@ namespace OC2DIYLevelSorting
     // All player-visible extension text lives here. DIYLevel uses the same language rule.
     internal static class Language
     {
-        internal const string MethodDescription = "Name or AddedTime (local info* file CreationTimeUtc; levels share their package time).";
+        internal const string MethodDescription = "Name or AddedTime (file LastWriteTimeUtc; info* for packages, each scene resource file for levels).";
         internal const string DirectionDescription = "Ascending or Descending. Equal values use a stable identity tie-break.";
         internal const string HistoryDescription = "Most recently clicked level identity; only this level and its package are marked. No successful load or completion is required. The legacy key name is retained.";
         internal static string Text(string english, string chinese)

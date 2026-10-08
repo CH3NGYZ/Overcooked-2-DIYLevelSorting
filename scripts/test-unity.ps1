@@ -53,6 +53,10 @@ try {
     if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A game started during test preparation.' }
     Copy-Item -LiteralPath (Join-Path $workspace 'bin\Release\OC2DIYLevelSorting.dll') -Destination $targets[0]
     Copy-Item -LiteralPath (Join-Path $workspace 'bin\UnityTests\OC2DIYLevelSorting.UnityTests.dll') -Destination $targets[1]
+    [pscustomobject]@{
+        Version = [Reflection.AssemblyName]::GetAssemblyName($targets[0]).Version.ToString()
+        SHA256 = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDirectory 'plugin-artifact.json')
     if ($WithoutFastInit -and (Test-Path -LiteralPath $fastPath)) {
         $fastHash = (Get-FileHash -LiteralPath $fastPath).Hash
         Move-Item -LiteralPath $fastPath -Destination $fastBackup

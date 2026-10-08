@@ -15,6 +15,7 @@ namespace OC2DIYLevelSorting
         internal readonly LevelListReturnState State = new LevelListReturnState();
         private readonly SortingPlugin plugin;
         private bool restoring;
+        private FrontendDLCMenu preparedDlcMenu;
         private static readonly MethodInfo selectSet = AccessTools.Method(typeof(OC2DIYLevel.DIYLevelEntryUI), "OnLevelSetSelected");
         private static readonly Type fastType = AccessTools.TypeByName("DIYLevelFastInit.FastInitPlugin");
         private static readonly FieldInfo fastLoading = fastType == null ? null : AccessTools.Field(fastType, "Loading");
@@ -95,6 +96,7 @@ namespace OC2DIYLevelSorting
             }
             if (State.Pending) plugin.Warn("Returning to the DIY level list timed out or was cancelled; keeping the original frontend.");
             State.Complete();
+            preparedDlcMenu = null;
             restoring = false;
         }
 
@@ -113,15 +115,21 @@ namespace OC2DIYLevelSorting
                 if (sets == null || levels == null) return false;
                 FrontendDLCMenu dlcMenu = root.SearchAllForMenuOfType<FrontendDLCMenu>();
                 if (dlcMenu == null) return false;
+                if (preparedDlcMenu != dlcMenu)
+                {
+                    T17FrontendFlow.Instance.FocusOnMainMenu();
+                    root.HideMenuStack();
+                    root.ExpandCurrentTab();
+                    // The original callback needs the card's handler and player.
+                    // Let the carousel's first Start/selection finish before
+                    // restoring DIY focus, so it cannot select a postcard later.
+                    if (!dlcMenu.Show(root.CurrentGamepadUser, root, root.gameObject, false)) return false;
+                    preparedDlcMenu = dlcMenu;
+                    return false;
+                }
                 LevelSetInfoSO target = null;
                 foreach (KeyValuePair<string, LevelSetInfoSO> item in DIY.levelSetInfos)
                     if (item.Value != null && plugin.Metadata.Get(item.Value).Identity == State.PackageIdentity) { target = item.Value; break; }
-                T17FrontendFlow.Instance.FocusOnMainMenu();
-                root.HideMenuStack();
-                root.ExpandCurrentTab();
-                // DIYLevel's original level callback reads the DLC card's handler
-                // and its engaged player. Native Show binds both after a reload.
-                if (!dlcMenu.Show(root.CurrentGamepadUser, root, root.gameObject, false)) return false;
                 sets.Show(root.CurrentGamepadUser, root, root.gameObject, false);
                 if (target != null)
                 {

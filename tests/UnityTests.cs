@@ -187,7 +187,7 @@ public sealed class UnityTests : BaseUnityPlugin
             {
                 if (GameAccess.SetMenu.GetValue(null) as FrontendOptionsMenu == null) DIYLevelEntryUI.AddUI();
                 int count = DIYLevelAssetBundleManager.levelSetInfos.Count;
-                if (count > 0 && count != observedLoaded)
+                if (count != observedLoaded)
                 {
                     observedLoaded = count;
                     if (!switchedWhileLoading)
@@ -446,12 +446,6 @@ public sealed class UnityTests : BaseUnityPlugin
         levels.Hide(false, false);
         sets.Show(user, root, rootObject, false);
         yield return new WaitForSecondsRealtime(0.2f);
-        List<KeyValuePair<T17Button, string>> packagePins = new List<KeyValuePair<T17Button, string>>();
-        foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot)
-            packagePins.Add(new KeyValuePair<T17Button, string>(setView.Content.Find("LevelSet_" + pair.Value.levelSetName).GetComponent<T17Button>(), SortingPlugin.Instance.Metadata.Get(pair.Value).Identity));
-        pinChecks = VerifyPins(setView, packagePins);
-        while (pinChecks.MoveNext()) yield return pinChecks.Current;
-
         // Append synthetic packages through the exact installed private button entry.
         LevelSetInfoSO duplicateA = Fixture("Same Name", "shared_scene", "fixture-a");
         LevelSetInfoSO duplicateB = Fixture("Same Name", "shared_scene", "fixture-b");
@@ -485,6 +479,20 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(aId != bId && !SortingPlugin.Instance.History.Contains(bId), "Same name/scene in different packages never shares history");
         sets.Show(user, root, rootObject, false);
         CheckNavigation(setView);
+        List<KeyValuePair<T17Button, string>> packagePins = new List<KeyValuePair<T17Button, string>>();
+        foreach (KeyValuePair<string, LevelSetInfoSO> pair in snapshot)
+            packagePins.Add(new KeyValuePair<T17Button, string>(setView.Content.Find("LevelSet_" + pair.Value.levelSetName).GetComponent<T17Button>(), SortingPlugin.Instance.Metadata.Get(pair.Value).Identity));
+        packagePins.Add(new KeyValuePair<T17Button, string>(bButton, SortingPlugin.Instance.Metadata.Get(duplicateB).Identity));
+        pinChecks = VerifyPins(setView, packagePins);
+        while (pinChecks.MoveNext()) yield return pinChecks.Current;
+        // Pin checks rebuild content; retrieve both duplicate-name rows by their
+        // restored stable pin identity rather than an ambiguous transform name.
+        List<Row> rebuiltRows = AccessTools.Field(typeof(MenuView), "rows").GetValue(setView) as List<Row>;
+        foreach (Row row in rebuiltRows)
+        {
+            if (row.Set == duplicateA) aButton = row.Button;
+            if (row.Set == duplicateB) bButton = row.Button;
+        }
         // Delete an entry; observer schedules a refresh without rebuilding the others.
         UnityEngine.Object.DestroyImmediate(aButton.gameObject);
         business.RemoveAll(delegate(KeyValuePair<string, LevelSetInfoSO> item) { return item.Value == duplicateA; });
@@ -667,12 +675,15 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(!SortingPlugin.Instance.Return.State.Pending, "Selecting levels without actually loading a kitchen does not arm return navigation");
         levels.Hide(false, false);
         sets.Hide(false, false);
+        SortingPlugin.Instance.Config.Bind<bool>("Navigation", "ReturnToLevelList", true, "test").Value = true;
+        Check(SortingPlugin.Instance.ReturnToLevelList, "Removed-package regression explicitly enables automatic return");
         LevelListReturnState returnState = SortingPlugin.Instance.Return.State;
         returnState.Capture("removed-package", "removed-level", "test-kitchen", 1f);
         returnState.SceneEntered("test-kitchen", true);
         returnState.SceneLeaving("StartScreen", "test-kitchen", true, true);
         SortingPlugin.Instance.Return.FrontendShown(root);
-        yield return new WaitForSecondsRealtime(0.4f);
+        deadline = Time.realtimeSinceStartup + 10f;
+        while (returnState.Pending && Time.realtimeSinceStartup < deadline) yield return null;
         Check(!returnState.Pending && sets.gameObject.activeInHierarchy && !levels.gameObject.activeInHierarchy,
             "A removed package falls back to the real package list and consumes the pending return (simulated return request)");
         sets.Hide(false, false);
@@ -859,6 +870,10 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(SceneManager.GetActiveScene().name == "StartScreen" && !LoadingScreenFlow.IsLoading && levels != null && levels.gameObject.activeInHierarchy,
             "The native results flow returns to the previous DIY level list");
         yield return new WaitForSecondsRealtime(0.8f);
+        GameObject focus = levels.CachedEventSystem.currentSelectedGameObject;
+        Check(focus != null && focus.GetComponent<ClickTracker>() != null
+            && focus.GetComponent<ClickTracker>().Identity == SortingPlugin.Instance.Metadata.Get(SortingPlugin.Instance.SelectedSet).LevelIds[level],
+            "Countdown return retains the clicked level focus after native DLC initialization");
         allowSaveDialog = true;
         selectedScene = null;
         button = levels.GetComponent<MenuView>().Content.Find("Level_" + level.levelName).GetComponent<T17Button>();

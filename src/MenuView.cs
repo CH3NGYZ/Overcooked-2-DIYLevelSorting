@@ -1,0 +1,311 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using LevelEditorStub;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
+using DIYUI = OC2DIYLevel.UIUtils;
+
+namespace OC2DIYLevelSorting
+{
+    internal sealed class Row
+    {
+        internal T17Button Button;
+        internal LevelSetInfoSO Set;
+        internal LevelInfoSO Level;
+        internal SortKey Key;
+        internal GameObject Badge;
+    }
+
+    public sealed class MenuView : MonoBehaviour
+    {
+        internal FrontendOptionsMenu Menu;
+        internal T17ScrollView Scroll;
+        internal RectTransform Content;
+        private readonly List<Row> rows = new List<Row>();
+        private readonly HashSet<T17Button> tracked = new HashSet<T17Button>();
+        private readonly RefreshGate gate = new RefreshGate();
+        private SortingDropdown method;
+        private SortingDropdown direction;
+        private bool clearing;
+        private bool applying;
+        private GameObject lastSelection;
+        private int lastSelectionFrame = -1;
+        private static Sprite circle;
+
+        internal void Initialize(FrontendOptionsMenu menu)
+        {
+            Menu = menu;
+            Content = menu.transform.Find(GameAccess.ContentPath) as RectTransform;
+            Scroll = menu.transform.Find("SettingsBody/ContentPC").GetComponent<T17ScrollView>();
+            if (Content == null || Scroll == null) throw new InvalidOperationException("DIYLevel menu content/scroll missing.");
+            ContentChanges observer = Content.gameObject.AddComponent<ContentChanges>();
+            observer.View = this;
+            EnsureControls();
+        }
+
+        internal void Request() { if (!applying && !clearing) gate.Request(Time.unscaledTime); }
+        internal void Tick() { if (gate.Ready(Time.unscaledTime)) Flush(); }
+
+        internal void Add(T17Button button, LevelSetInfoSO set, LevelInfoSO level)
+        {
+            if (!tracked.Add(button)) return;
+            PackageMetadata package = SortingPlugin.Instance.Metadata.Get(set);
+            string identity = package.Identity;
+            if (level != null && !package.LevelIds.TryGetValue(level, out identity))
+                throw new InvalidOperationException("Level was not found in the selected package.");
+            Row row = new Row();
+            row.Button = button;
+            row.Set = set;
+            row.Level = level;
+            row.Key = new SortKey(Name(row), package.AddedTicks, identity);
+            row.Badge = CreateBadge(button, level == null);
+            rows.Add(row);
+            if (level != null)
+            {
+                // Keep original callbacks and callbacks from other mods intact.
+                string clickedId = identity;
+                button.onClick.AddListener(delegate
+                {
+                    try { SortingPlugin.Instance.Record(clickedId); }
+                    catch (Exception e) { SortingPlugin.Instance.Report("T17Button.onClick", "Listener", e); }
+                });
+            }
+            RefreshBadge(row);
+            Request();
+        }
+
+        private static string Name(Row row)
+        {
+            return row.Level != null ? DIYUI.GetLocalizedText(row.Level.levelName, row.Level.levelNameZH)
+                : DIYUI.GetLocalizedText(row.Set.levelSetName, row.Set.levelSetNameZH);
+        }
+
+        private void EnsureControls()
+        {
+            if (method == null) method = SortingDropdown.Create(this, "DIYSorting_Method", false);
+            if (direction == null) direction = SortingDropdown.Create(this, "DIYSorting_Direction", true);
+        }
+
+        internal void RefreshLabels()
+        {
+            EnsureControls();
+            method.Refresh();
+            direction.Refresh();
+            for (int i = rows.Count - 1; i >= 0; i--)
+            {
+                Row row = rows[i];
+                if (row.Button == null || row.Set == null) { rows.RemoveAt(i); continue; }
+                row.Key.Name = Name(row) ?? string.Empty;
+                RefreshBadge(row);
+            }
+            Request();
+        }
+
+        internal void BeforeClear()
+        {
+            clearing = true;
+            CloseDropdowns(false);
+            rows.Clear();
+            tracked.Clear();
+            // Popups are outside Content; destroy them explicitly before the native clear.
+            if (method != null) method.DestroyPopup();
+            if (direction != null) direction.DestroyPopup();
+            method = null;
+            direction = null;
+            GameAccess.Items(Scroll).Clear();
+        }
+
+        internal void AfterClear()
+        {
+            clearing = false;
+            EnsureControls();
+            Request();
+        }
+
+        internal void Flush()
+        {
+            if (clearing || Content == null) return;
+            applying = true;
+            try
+            {
+                EnsureControls();
+                rows.RemoveAll(delegate(Row row) { return row.Button == null || row.Button.transform.parent != Content; });
+                tracked.Clear();
+                foreach (Row row in rows) tracked.Add(row.Button);
+                SortKeyComparer comparer = new SortKeyComparer(SortingPlugin.Instance.Method, SortingPlugin.Instance.Direction,
+                    Localization.GetLanguage() == SupportedLanguages.Chinese ? CultureInfo.GetCultureInfo("zh-CN") : CultureInfo.GetCultureInfo("en-US"));
+                rows.Sort(delegate(Row a, Row b) { return comparer.Compare(a.Key, b.Key); });
+                HashSet<Transform> sorted = new HashSet<Transform>();
+                foreach (Row row in rows) sorted.Add(row.Button.transform);
+                List<Transform> fixedRows = new List<Transform>();
+                Transform reload = null;
+                for (int i = 0; i < Content.childCount; i++)
+                {
+                    Transform child = Content.GetChild(i);
+                    if (child.name == "FastInit_Reload") { reload = child; continue; }
+                    if (child == method.transform || child == direction.transform || sorted.Contains(child)) continue;
+                    fixedRows.Add(child);
+                }
+                int index = 0;
+                if (reload != null) Move(reload, index++);
+                Move(method.transform, index++);
+                Move(direction.transform, index++);
+                foreach (Transform child in fixedRows) Move(child, index++);
+                foreach (Row row in rows) { Move(row.Button.transform, index++); RefreshBadge(row); }
+                LayoutRebuilder.ForceRebuildLayoutImmediate(Content);
+                SynchronizeNavigation();
+            }
+            finally { applying = false; gate.Complete(); }
+        }
+
+        private static void Move(Transform item, int index)
+        {
+            if (item.GetSiblingIndex() != index) item.SetSiblingIndex(index);
+        }
+
+        internal void SynchronizeNavigation()
+        {
+            List<RectTransform> cache = GameAccess.Items(Scroll);
+            cache.Clear();
+            List<Selectable> selectables = new List<Selectable>();
+            T17EventSystem system = Menu.CachedEventSystem ?? Scroll.CachedEventSystem;
+            GameObject selected = system == null ? null : system.currentSelectedGameObject;
+            for (int i = 0; i < Content.childCount; i++)
+            {
+                Transform child = Content.GetChild(i);
+                if (!child.gameObject.activeSelf) continue;
+                Selectable selectable = child.GetComponent<Selectable>();
+                RectTransform rect = child as RectTransform;
+                if (selectable == null || rect == null) continue;
+                cache.Add(rect);
+                selectables.Add(selectable);
+                SelectionTracker tracker = child.GetComponent<SelectionTracker>();
+                if (tracker == null) tracker = child.gameObject.AddComponent<SelectionTracker>();
+                tracker.View = this;
+                Menu.AddAllowedSelectables(selectable);
+                Scroll.AddAllowedSelectables(selectable);
+                T17Button button = selectable as T17Button;
+                if (button != null && system != null) button.SetEventSystem(system);
+            }
+            for (int i = 0; i < selectables.Count; i++)
+            {
+                Navigation nav = selectables[i].navigation;
+                nav.mode = Navigation.Mode.Explicit;
+                nav.selectOnUp = i == 0 ? Scroll.m_BorderSelectables.selectOnUp : selectables[i - 1];
+                nav.selectOnDown = i == selectables.Count - 1 ? Scroll.m_BorderSelectables.selectOnDown : selectables[i + 1];
+                nav.selectOnLeft = Scroll.m_BorderSelectables.selectOnLeft;
+                nav.selectOnRight = Scroll.m_BorderSelectables.selectOnRight;
+                selectables[i].navigation = nav;
+            }
+            if (Scroll.m_BorderSelectables.selectOnDown != null && selectables.Count > 0)
+            {
+                Navigation nav = Scroll.m_BorderSelectables.selectOnDown.navigation;
+                nav.selectOnUp = selectables[selectables.Count - 1];
+                Scroll.m_BorderSelectables.selectOnDown.navigation = nav;
+            }
+            int current = selected == null ? -1 : cache.FindIndex(delegate(RectTransform item) { return item.gameObject == selected; });
+            if (current < 0) current = Math.Min(Scroll.GetCurrentSelected(), Math.Max(0, cache.Count - 1));
+            GameAccess.Current.SetValue(Scroll, current);
+            GameAccess.Previous.SetValue(Scroll, current);
+            GameAccess.LerpTime.SetValue(Scroll, 0f);
+            GameAccess.DesiredPosition.SetValue(Scroll, (Vector2)Content.localPosition);
+            if (selected != null && selected.transform.parent == Content && Menu.isActiveAndEnabled)
+                Scroll.ScrollToEntry(selected, false);
+            method.BindEventSystem(system);
+            direction.BindEventSystem(system);
+        }
+
+        internal bool AcceptSelection(Selectable selectable, ref int index)
+        {
+            int actual = GameAccess.Items(Scroll).IndexOf(selectable.GetComponent<RectTransform>());
+            if (actual < 0) return false;
+            index = actual;
+            if (lastSelection == selectable.gameObject && lastSelectionFrame == Time.frameCount) return false;
+            lastSelection = selectable.gameObject;
+            lastSelectionFrame = Time.frameCount;
+            return true;
+        }
+
+        internal void NotifySelected(Selectable selectable)
+        {
+            try { GameAccess.SelectElement.Invoke(Scroll, new object[] { selectable, 0 }); }
+            catch (Exception e) { SortingPlugin.Instance.Report("T17ScrollView.OnElementSelected", "SelectionTracker", e); }
+        }
+
+        internal bool CloseDropdowns(bool restoreFocus)
+        {
+            bool closed = method != null && method.Close(restoreFocus);
+            return (direction != null && direction.Close(restoreFocus)) || closed;
+        }
+
+        private void RefreshBadge(Row row)
+        {
+            if (row.Badge != null) row.Badge.SetActive(row.Level == null
+                ? SortingPlugin.Instance.History.HasPackage(row.Key.Identity)
+                : SortingPlugin.Instance.History.Contains(row.Key.Identity));
+        }
+
+        private static GameObject CreateBadge(T17Button button, bool package)
+        {
+            if (circle == null)
+            {
+                Texture2D texture = new Texture2D(24, 24, TextureFormat.ARGB32, false);
+                Color[] pixels = new Color[24 * 24];
+                for (int y = 0; y < 24; y++) for (int x = 0; x < 24; x++)
+                {
+                    float distance = new Vector2(x - 11.5f, y - 11.5f).magnitude;
+                    pixels[y * 24 + x] = new Color(1f, 1f, 1f, Mathf.Clamp01(11.5f - distance));
+                }
+                texture.SetPixels(pixels);
+                texture.Apply();
+                circle = Sprite.Create(texture, new Rect(0, 0, 24, 24), new Vector2(0.5f, 0.5f));
+                UnityEngine.Object.DontDestroyOnLoad(texture);
+                UnityEngine.Object.DontDestroyOnLoad(circle);
+            }
+            GameObject badge = new GameObject("DIYSorting_Clicked", typeof(RectTransform), typeof(Image));
+            badge.layer = button.gameObject.layer;
+            badge.transform.SetParent(button.transform, false);
+            RectTransform rect = badge.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(0.025f, 0.5f);
+            rect.sizeDelta = new Vector2(12, 12);
+            Image image = badge.GetComponent<Image>();
+            image.sprite = circle;
+            image.color = new Color(0.75f, 1f, 0.5f, 1f);
+            image.raycastTarget = false;
+            if (!package)
+            {
+                Transform title = button.transform.Find("Title");
+                if (title != null)
+                {
+                    RectTransform text = title as RectTransform;
+                    text.offsetMin += new Vector2(22, 0);
+                }
+            }
+            return badge;
+        }
+
+        private void OnDisable() { CloseDropdowns(false); }
+        private void OnDestroy()
+        {
+            CloseDropdowns(false);
+            if (SortingPlugin.Instance != null && !object.ReferenceEquals(Menu, null)) SortingPlugin.Instance.Forget(Menu);
+        }
+    }
+
+    public sealed class ContentChanges : MonoBehaviour
+    {
+        internal MenuView View;
+        private void OnTransformChildrenChanged() { if (View != null) View.Request(); }
+    }
+
+    public sealed class SelectionTracker : MonoBehaviour, ISelectHandler
+    {
+        internal MenuView View;
+        public void OnSelect(BaseEventData eventData)
+        {
+            if (View != null) View.NotifySelected(GetComponent<Selectable>());
+        }
+    }
+}

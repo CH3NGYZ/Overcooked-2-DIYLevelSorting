@@ -56,24 +56,34 @@ try {
     }
     $env:OC2_SORTING_TEST_OUTPUT = $runDirectory
     $arguments = @('-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '720', '-logFile', ('"' + (Join-Path $runDirectory 'player.log') + '"'), '-oc2SortingTestOutput', ('"' + $runDirectory + '"'))
-    $gameProcess = Start-Process -FilePath (Join-Path $GameRoot 'Overcooked2.exe') -WorkingDirectory $GameRoot -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    $steamPath = (Get-Process -Name steam -ErrorAction SilentlyContinue | Select-Object -First 1).Path
+    if (-not $steamPath) { $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamExe }
+    if ($steamPath -and (Test-Path -LiteralPath $steamPath)) {
+        # Starting the executable directly can make SteamAPI_RestartAppIfNecessary
+        # open steam://run with the arguments and require a ShowGameArgs confirmation.
+        # Ask the installed Steam client to launch instead; never own/stop that client.
+        Start-Process -FilePath $steamPath -ArgumentList (@('-applaunch', '728880') + $arguments) -WindowStyle Hidden | Out-Null
+    }
+    else {
+        $gameProcess = Start-Process -FilePath (Join-Path $GameRoot 'Overcooked2.exe') -WorkingDirectory $GameRoot -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    }
     $deadline = (Get-Date).AddSeconds(150)
     $startupDeadline = (Get-Date).AddSeconds(45)
     # Steam may restart the bootstrap process. Adopt only a process with this exact
     # unique test directory in its command line, never an unrelated player process.
-    while ($gameProcess.HasExited -or -not (Test-Path -LiteralPath (Join-Path $runDirectory 'player.log'))) {
+    while ($null -eq $gameProcess -or $gameProcess.HasExited -or -not (Test-Path -LiteralPath (Join-Path $runDirectory 'player.log'))) {
         $relaunched = Get-CimInstance Win32_Process -Filter "Name = 'Overcooked2.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($runDirectory) }
-        if ($relaunched) { $gameProcess = Get-Process -Id ($relaunched | Select-Object -First 1).ProcessId }
+        if ($relaunched) { $gameProcess = Get-Process -Id ($relaunched | Select-Object -First 1).ProcessId -ErrorAction SilentlyContinue }
         if ((Get-Date) -ge $startupDeadline) { throw 'Steam test startup exceeded 45 seconds.' }
         if (Test-Path -LiteralPath (Join-Path $runDirectory 'result.txt')) { break }
         Start-Sleep -Milliseconds 500
-        $gameProcess.Refresh()
+        if ($null -ne $gameProcess) { $gameProcess.Refresh() }
     }
-    while (-not $gameProcess.HasExited -and (Get-Date) -lt $deadline) {
+    while ($null -ne $gameProcess -and -not $gameProcess.HasExited -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         $gameProcess.Refresh()
     }
-    if (-not $gameProcess.HasExited) { throw 'Owned test game exceeded 150 seconds; see player.log.' }
+    if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { throw 'Owned test game exceeded 150 seconds; see player.log.' }
     $resultPath = Join-Path $runDirectory 'result.txt'
     if (-not (Test-Path -LiteralPath $resultPath)) { throw "Test plugin produced no result. Evidence: $runDirectory" }
     $result = Get-Content -LiteralPath $resultPath -Raw

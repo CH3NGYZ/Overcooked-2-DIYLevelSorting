@@ -87,10 +87,12 @@ public sealed class UnityTests : BaseUnityPlugin
         int observedLoaded = -1;
         bool switchedWhileLoading = false;
         int stableLoadingFrames = 0;
+        int visibleLoadingFrames = 0;
         int stableLoadingAppends = 0;
         SortMethod loadingMethod = SortingPlugin.Instance.Method;
         SortDirection loadingDirection = SortingPlugin.Instance.Direction;
         SortingDropdown stableMethodControl = null;
+        SortingDropdown stableDirectionControl = null;
         while (Time.realtimeSinceStartup < deadline && loading != null && (bool)loading.GetValue(null))
         {
             if (DIYLevelAssetBundleManager.IsInitialized)
@@ -102,12 +104,23 @@ public sealed class UnityTests : BaseUnityPlugin
                     observedLoaded = count;
                     if (!switchedWhileLoading)
                     {
-                        SortingPlugin.Instance.SetSort(1, false);
-                        SortingPlugin.Instance.SetSort(1, true);
+                        FrontendOptionsMenu loadingMenu = (FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null);
+                        GamepadUser loadingUser = GameUtils.RequireManager<PlayerManager>().GetUser(EngagementSlot.One);
+                        Check(loadingUser != null, "Primary user exists while FastInit is still loading");
+                        FrontendRootMenu loadingRoot = rootObject.GetComponent<FrontendRootMenu>();
+                        AccessTools.Field(typeof(BaseMenuBehaviour), "m_CurrentGamepadUser").SetValue(loadingRoot, loadingUser);
+                        loadingMenu.Show(loadingUser, loadingRoot, rootObject, false);
+                        T17StandaloneInputModule loadingInput = loadingMenu.CachedEventSystem.GetComponent<T17StandaloneInputModule>();
+                        if (loadingInput != null) { loadingInput.allowMouseInput = false; loadingInput.forceModuleActive = true; }
+                        // Exercise a real change even if the saved config already
+                        // contains AddedTime/Descending from a previous manual run.
+                        SortingPlugin.Instance.SetSort(1 - (int)loadingMethod, false);
+                        SortingPlugin.Instance.SetSort(1 - (int)loadingDirection, true);
                         loadingMethod = SortingPlugin.Instance.Method;
                         loadingDirection = SortingPlugin.Instance.Direction;
                         MenuView loadingView = ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).GetComponent<MenuView>();
                         stableMethodControl = loadingView.Toolbar.GetChild(0).GetComponent<SortingDropdown>();
+                        stableDirectionControl = loadingView.Toolbar.GetChild(1).GetComponent<SortingDropdown>();
                         switchedWhileLoading = true;
                     }
                     else stableLoadingAppends++;
@@ -115,14 +128,9 @@ public sealed class UnityTests : BaseUnityPlugin
                 if (switchedWhileLoading)
                 {
                     MenuView loadingView = ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).GetComponent<MenuView>();
-                    if (loadingView.Toolbar.GetChild(0).GetComponent<SortingDropdown>() != stableMethodControl)
-                        throw new Exception("Dropdown control was recreated during FastInit append.");
-                    if (SortingPlugin.Instance.Method != loadingMethod || SortingPlugin.Instance.Direction != loadingDirection)
-                        throw new Exception("Sorting configuration reset during FastInit append.");
-                    string expected = Language.Caption(Language.MethodLabel, Language.Methods[(int)loadingMethod]);
-                    if (stableMethodControl.transform.Find("Title").GetComponent<T17Text>().text != expected)
-                        throw new Exception("Sorting caption reset during FastInit append.");
+                    AssertStableControls(loadingView, stableMethodControl, stableDirectionControl, loadingMethod, loadingDirection);
                     stableLoadingFrames++;
+                    if (loadingView.Menu.isActiveAndEnabled) visibleLoadingFrames++;
                 }
             }
             yield return null;
@@ -130,7 +138,9 @@ public sealed class UnityTests : BaseUnityPlugin
         if (fast != null)
         {
             Check(switchedWhileLoading, "Sorting changed once during the real FastInit loading coroutine");
-            Check(stableLoadingFrames > 0 && stableLoadingAppends > 0, "Dropdown identity, caption and saved selection stay stable across " + stableLoadingFrames + " frames and " + stableLoadingAppends + " further appends");
+            Check(stableLoadingFrames > 0 && stableLoadingAppends > 0, "Both dropdown identities, captions and saved selections stay stable across " + stableLoadingFrames + " frames and " + stableLoadingAppends + " further appends");
+            Check(visibleLoadingFrames > 0, "Sorting toolbar stays stable on the visible menu during " + visibleLoadingFrames + " loading frames");
+            ((FrontendOptionsMenu)GameAccess.SetMenu.GetValue(null)).Hide(false, false);
         }
         Check(DIYLevelAssetBundleManager.IsInitialized, "DIYLevel initialized through the installed manager");
         Logger.LogInfo("FastInit=" + (fast != null));
@@ -339,6 +349,9 @@ public sealed class UnityTests : BaseUnityPlugin
         // Exercise FastInit's actual repair, reload-button state and hot-sync entry when present.
         if (fast != null)
         {
+            levels.Hide(false, false);
+            sets.Show(user, root, rootObject, false);
+            yield return null;
             AccessTools.Method(fast, "HealLevelSetButtons").Invoke(null, null);
             setView.Flush();
             Transform reload = setView.Content.Find("FastInit_Reload");
@@ -350,17 +363,35 @@ public sealed class UnityTests : BaseUnityPlugin
             Check(!reload.GetComponent<T17Button>().interactable, "Sorting preserves FastInit Loading disable state");
             loading.SetValue(null, savedLoading);
             AccessTools.Method(fast, "EnsureReloadButton").Invoke(null, new object[] { sets });
+            SortMethod reloadMethod = SortingPlugin.Instance.Method;
+            SortDirection reloadDirection = SortingPlugin.Instance.Direction;
+            SortingDropdown reloadDirectionControl = setView.Toolbar.GetChild(1).GetComponent<SortingDropdown>();
             AccessTools.Method(fast, "TrySyncReload").Invoke(null, null);
-            yield return new WaitForSecondsRealtime(1);
-            while ((bool)loading.GetValue(null) && Time.realtimeSinceStartup < deadline) yield return null;
+            int reloadFrames = 0;
+            float reloadObserveUntil = Time.realtimeSinceStartup + 1;
+            while (((bool)loading.GetValue(null) || Time.realtimeSinceStartup < reloadObserveUntil) && Time.realtimeSinceStartup < deadline)
+            {
+                AssertStableControls(setView, originalMethod, reloadDirectionControl, reloadMethod, reloadDirection);
+                reloadFrames++;
+                yield return null;
+            }
             setView.Flush();
             Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Actual FastInit hot-sync retains controls");
+            Check(reloadFrames > 0, "Both visible dropdowns retain their objects, captions and selections during " + reloadFrames + " hot-sync frames");
         }
         else Check(setView.Content.Find("FastInit_Reload") == null, "Sorting operates when FastInit is absent");
         DIYUI.ClearAllMenuContent(sets);
         Check(setView.Content.childCount == 0 && setView.Toolbar.childCount == 2, "Empty package list retains two fixed controls outside content");
         Check(setView.Toolbar.GetChild(0).GetComponent<SortingDropdown>() == originalMethod, "ClearAllMenuContent preserves the original fixed control object");
         levels.Hide(false, false);
+        // Native Hide can restore the direction control selected before entering a
+        // package. Preserve valid toolbar focus, then separately test stale row focus.
+        sets.CachedEventSystem.SetSelectedGameObject(directionDropdown.gameObject);
+        yield return null;
+        sets.Show(user, root, rootObject, false);
+        yield return new WaitForSecondsRealtime(0.2f);
+        Check(sets.CachedEventSystem.currentSelectedGameObject == directionDropdown.gameObject, "Empty list preserves existing direction-control focus");
+        sets.CachedEventSystem.SetSelectedGameObject(levels.GetComponent<MenuView>().Content.GetChild(0).gameObject);
         sets.Show(user, root, rootObject, false);
         yield return new WaitForSecondsRealtime(0.2f);
         Check(sets.CachedEventSystem.currentSelectedGameObject == originalMethod.gameObject, "Empty list can focus the fixed sorting controls");
@@ -393,6 +424,17 @@ public sealed class UnityTests : BaseUnityPlugin
         yield return new WaitForSecondsRealtime(0.5f);
         ScreenCapture.CaptureScreenshot(Path.Combine(output, "menus.png"));
         yield return new WaitForSecondsRealtime(0.3f);
+    }
+
+    private static void AssertStableControls(MenuView view, SortingDropdown methodControl, SortingDropdown directionControl, SortMethod method, SortDirection direction)
+    {
+        if (view.Toolbar.GetChild(0).GetComponent<SortingDropdown>() != methodControl || view.Toolbar.GetChild(1).GetComponent<SortingDropdown>() != directionControl)
+            throw new Exception("Dropdown control was recreated during FastInit refresh.");
+        if (SortingPlugin.Instance.Method != method || SortingPlugin.Instance.Direction != direction)
+            throw new Exception("Sorting configuration reset during FastInit refresh.");
+        if (methodControl.transform.Find("Title").GetComponent<T17Text>().text != Language.Caption(Language.MethodLabel, Language.Methods[(int)method]) ||
+            directionControl.transform.Find("Title").GetComponent<T17Text>().text != Language.Caption(Language.DirectionLabel, Language.Directions[(int)direction]))
+            throw new Exception("Sorting caption reset during FastInit refresh.");
     }
 
     private static LevelSetInfoSO Fixture(string name, string scene, string uid)

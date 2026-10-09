@@ -57,28 +57,28 @@ namespace OC2DIYLevelSorting
             LayoutRebuilder.ForceRebuildLayoutImmediate(body);
             Vector3[] corners = new Vector3[4];
             scrollRect.GetWorldCorners(corners);
-            Vector3 topRight = body.InverseTransformPoint(corners[2]);
+            Vector3 topLeft = body.InverseTransformPoint(corners[1]);
             const float width = 290f;
             const float gap = 24f;
             const float margin = 30f;
-            float available = body.rect.xMax - topRight.x;
+            float available = topLeft.x - body.rect.xMin;
             if (available < width + gap + margin)
             {
                 float reserve = width + gap + margin - available;
-                // Reserve a right column while keeping the list's left edge in place.
+                // Mirror the former right column, keeping the list's right edge in place.
                 scrollRect.sizeDelta -= new Vector2(reserve, 0);
-                scrollRect.anchoredPosition -= new Vector2(reserve * scrollRect.pivot.x, 0);
+                scrollRect.anchoredPosition += new Vector2(reserve * (1f - scrollRect.pivot.x), 0);
                 scrollRect.GetWorldCorners(corners);
-                topRight = body.InverseTransformPoint(corners[2]);
+                topLeft = body.InverseTransformPoint(corners[1]);
             }
             GameObject panel = new GameObject("DIYSorting_Toolbar", typeof(RectTransform));
             panel.layer = Menu.gameObject.layer;
             panel.transform.SetParent(body, false);
             Toolbar = panel.GetComponent<RectTransform>();
             Toolbar.anchorMin = Toolbar.anchorMax = new Vector2(0.5f, 0.5f);
-            Toolbar.pivot = new Vector2(0, 1);
+            Toolbar.pivot = new Vector2(1, 1);
             Toolbar.sizeDelta = new Vector2(width, 212f);
-            Toolbar.localPosition = new Vector3(topRight.x + gap, topRight.y, 0);
+            Toolbar.localPosition = new Vector3(topLeft.x - gap, topLeft.y, 0);
         }
 
         internal void Request() { if (!applying && !clearing) gate.Request(Time.unscaledTime); }
@@ -305,16 +305,16 @@ namespace OC2DIYLevelSorting
                 nav.mode = Navigation.Mode.Explicit;
                 nav.selectOnUp = i == 0 ? Scroll.m_BorderSelectables.selectOnUp : selectables[i - 1];
                 nav.selectOnDown = i == selectables.Count - 1 ? Scroll.m_BorderSelectables.selectOnDown : selectables[i + 1];
-                nav.selectOnLeft = Scroll.m_BorderSelectables.selectOnLeft;
+                nav.selectOnLeft = method.GetComponent<Selectable>();
                 Transform pinTransform = selectables[i].transform.Find("DIYSorting_Pin");
                 T17Button pin = pinTransform == null ? null : pinTransform.GetComponent<T17Button>();
-                nav.selectOnRight = pin == null ? method.GetComponent<Selectable>() : pin;
+                nav.selectOnRight = pin == null ? Scroll.m_BorderSelectables.selectOnRight : pin;
                 selectables[i].navigation = nav;
                 if (pin != null)
                 {
                     Navigation pinNav = nav;
                     pinNav.selectOnLeft = selectables[i];
-                    pinNav.selectOnRight = method.GetComponent<Selectable>();
+                    pinNav.selectOnRight = Scroll.m_BorderSelectables.selectOnRight;
                     pin.navigation = pinNav;
                 }
             }
@@ -352,16 +352,14 @@ namespace OC2DIYLevelSorting
 
         private void LinkToolbar(Selectable returnTo)
         {
-            Transform pin = returnTo == null ? null : returnTo.transform.Find("DIYSorting_Pin");
-            if (pin != null) returnTo = pin.GetComponent<Selectable>();
             Selectable methodButton = method.GetComponent<Selectable>();
             Selectable directionButton = direction.GetComponent<Selectable>();
             Navigation methodNavigation = methodButton.navigation;
             methodNavigation.mode = Navigation.Mode.Explicit;
             methodNavigation.selectOnUp = Scroll.m_BorderSelectables.selectOnUp;
             methodNavigation.selectOnDown = directionButton;
-            methodNavigation.selectOnLeft = returnTo;
-            methodNavigation.selectOnRight = null;
+            methodNavigation.selectOnLeft = null;
+            methodNavigation.selectOnRight = returnTo;
             methodButton.navigation = methodNavigation;
             Navigation directionNavigation = methodNavigation;
             directionNavigation.selectOnUp = methodButton;

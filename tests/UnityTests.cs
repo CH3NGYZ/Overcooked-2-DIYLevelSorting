@@ -254,7 +254,7 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Two dropdown controls in package menu");
         Check(levels.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Two dropdown controls in level menu");
         Check(setView.Toolbar.parent == sets.transform.Find("SettingsBody") && !setView.Toolbar.IsChildOf(setView.Content), "Sorting toolbar is outside the scrolling content");
-        Check(setView.Toolbar.childCount == 2, "Right toolbar holds exactly two fixed controls");
+        Check(setView.Toolbar.childCount == 2, "Left toolbar holds exactly two fixed controls");
         SortingDropdown originalMethod = setView.Toolbar.GetChild(0).GetComponent<SortingDropdown>();
         DIYLevelEntryUI.AddUI();
         Check(sets.GetComponentsInChildren<SortingDropdown>(true).Length == 2, "Repeated AddUI has no duplicate dropdowns");
@@ -296,7 +296,7 @@ public sealed class UnityTests : BaseUnityPlugin
         Vector3 toolbarPosition = setView.Toolbar.position;
         setView.Scroll.verticalNormalizedPosition = 0;
         yield return null;
-        Check(setView.Toolbar.position == toolbarPosition, "Right controls stay fixed while the list scrolls");
+        Check(setView.Toolbar.position == toolbarPosition, "Left controls stay fixed while the list scrolls");
         setView.Scroll.verticalNormalizedPosition = 1;
         SortingDropdown dropdown = setView.Toolbar.Find("DIYSorting_Method").GetComponent<SortingDropdown>();
         T17EventSystem eventSystem = sets.CachedEventSystem;
@@ -304,6 +304,7 @@ public sealed class UnityTests : BaseUnityPlugin
         // Selection still runs through the real T17EventSystem and original UI handlers.
         DisablePhysicalMouse(eventSystem);
         yield return new WaitForSecondsRealtime(0.1f);
+        CheckLeftToolbar(setView);
         GameObject firstRow = setView.Content.Find("LevelSet_" + snapshot[0].Value.levelSetName).gameObject;
         eventSystem.SetSelectedGameObject(firstRow);
         yield return new WaitForSecondsRealtime(0.1f);
@@ -313,17 +314,23 @@ public sealed class UnityTests : BaseUnityPlugin
         yield return new WaitForSecondsRealtime(0.1f);
         GameObject pinFocus = firstRow.transform.Find("DIYSorting_Pin").gameObject;
         Check(eventSystem.currentSelectedGameObject == pinFocus, "Native right navigation reaches the row pin button");
-        ExecuteEvents.Execute(pinFocus, right, ExecuteEvents.moveHandler);
-        yield return new WaitForSecondsRealtime(0.1f);
-        Check(eventSystem.currentSelectedGameObject == dropdown.gameObject, "Native right navigation reaches fixed toolbar");
         AxisEventData left = new AxisEventData(eventSystem);
         left.moveDir = MoveDirection.Left;
-        ExecuteEvents.Execute(dropdown.gameObject, left, ExecuteEvents.moveHandler);
-        yield return new WaitForSecondsRealtime(0.1f);
-        Check(eventSystem.currentSelectedGameObject == pinFocus, "Native left navigation returns to the selected row pin");
         ExecuteEvents.Execute(pinFocus, left, ExecuteEvents.moveHandler);
         yield return new WaitForSecondsRealtime(0.1f);
         Check(eventSystem.currentSelectedGameObject == firstRow, "Native left navigation returns to the selected list row");
+        ExecuteEvents.Execute(firstRow, left, ExecuteEvents.moveHandler);
+        yield return new WaitForSecondsRealtime(0.1f);
+        Check(eventSystem.currentSelectedGameObject == dropdown.gameObject, "Native left navigation reaches the left sorting toolbar");
+        ExecuteEvents.Execute(dropdown.gameObject, right, ExecuteEvents.moveHandler);
+        yield return new WaitForSecondsRealtime(0.1f);
+        Check(eventSystem.currentSelectedGameObject == firstRow, "Native right navigation returns from the left toolbar to the selected row");
+        GameObject directionFocus = setView.Toolbar.Find("DIYSorting_Direction").gameObject;
+        eventSystem.SetSelectedGameObject(directionFocus);
+        yield return new WaitForSecondsRealtime(0.1f);
+        ExecuteEvents.Execute(directionFocus, right, ExecuteEvents.moveHandler);
+        yield return new WaitForSecondsRealtime(0.1f);
+        Check(eventSystem.currentSelectedGameObject == firstRow, "Direction control also returns right to the selected row");
         T17Button trigger = dropdown.GetComponent<T17Button>();
         Logger.LogInfo("Dropdown diagnostics: active=" + trigger.gameObject.activeInHierarchy + ", enabled=" + trigger.enabled + ", interactable=" + trigger.interactable + ", IsInteractable=" + trigger.IsInteractable() + ", menu=" + sets.gameObject.activeInHierarchy);
         foreach (Component component in trigger.GetComponents<Component>()) Logger.LogInfo("Trigger component: " + component.GetType().FullName);
@@ -376,10 +383,12 @@ public sealed class UnityTests : BaseUnityPlugin
         LevelSetInfoSO chosen = chosenPair.Value ?? snapshot[0].Value;
         if (chosenPair.Value != null) Check(chosen.levelInfos.Length == 8, "littleHa exposes the eight installed levels reported by the player");
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { chosen });
-        yield return new WaitForSecondsRealtime(0.3f);
         MenuView levelView = levels.GetComponent<MenuView>();
+        IEnumerator transition = WaitForMenuToSettle(levelView);
+        while (transition.MoveNext()) yield return transition.Current;
         Check(levelView.Content.childCount == chosen.levelInfos.Length, "Original package selection contains only its own levels");
         CheckNavigation(levelView);
+        CheckLeftToolbar(levelView);
         HashSet<long> chosenTimes = new HashSet<long>();
         foreach (LevelInfoSO level in chosen.levelInfos)
         {
@@ -1058,7 +1067,80 @@ public sealed class UnityTests : BaseUnityPlugin
         {
             Check(cached[i] == view.Content.GetChild(i), "Cache index matches display " + i);
             if (i + 1 < cached.Count) Check(cached[i].GetComponent<Selectable>().navigation.selectOnDown == cached[i + 1].GetComponent<Selectable>(), "Down navigation matches next row " + i);
+            Check(cached[i].GetComponent<Selectable>().navigation.selectOnLeft == view.Toolbar.GetChild(0).GetComponent<Selectable>(),
+                "Left navigation matches the left sorting toolbar " + i);
         }
+    }
+
+    private IEnumerator WaitForMenuToSettle(MenuView view)
+    {
+        // The native slide-in can still put controls off screen after a fixed
+        // 0.3 seconds. Observe the actual pose before testing pointer input.
+        float deadline = Time.realtimeSinceStartup + 5f;
+        float stableSince = Time.realtimeSinceStartup;
+        Vector3 previous = view.Toolbar.position;
+        Canvas canvas = view.Toolbar.GetComponentInParent<Canvas>();
+        Camera camera = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+        Vector3[] corners = new Vector3[4];
+        bool settled = false;
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            yield return null;
+            Vector3 position = view.Toolbar.position;
+            bool visible = true;
+            view.Toolbar.GetWorldCorners(corners);
+            foreach (Vector3 corner in corners)
+            {
+                Vector2 point = RectTransformUtility.WorldToScreenPoint(camera, corner);
+                visible &= point.x >= 0 && point.x <= Screen.width && point.y >= 0 && point.y <= Screen.height;
+            }
+            if (!visible || (position - previous).sqrMagnitude > 0.01f) stableSince = Time.realtimeSinceStartup;
+            previous = position;
+            if (visible && Time.realtimeSinceStartup - stableSince >= 0.2f && !view.Menu.CachedEventSystem.IsDisabled())
+            {
+                settled = true;
+                break;
+            }
+        }
+        Check(settled, "Native menu transition settles with both controls on screen before pointer checks");
+    }
+
+    private void CheckLeftToolbar(MenuView view)
+    {
+        RectTransform body = view.Menu.transform.Find("SettingsBody") as RectTransform;
+        Vector3[] listCorners = new Vector3[4];
+        Vector3[] toolbarCorners = new Vector3[4];
+        view.Scroll.GetComponent<RectTransform>().GetWorldCorners(listCorners);
+        view.Toolbar.GetWorldCorners(toolbarCorners);
+        Vector3 listLeft = body.InverseTransformPoint(listCorners[1]);
+        Vector3 toolbarLeft = body.InverseTransformPoint(toolbarCorners[1]);
+        Vector3 toolbarRight = body.InverseTransformPoint(toolbarCorners[2]);
+        Check(Mathf.Abs(listLeft.x - toolbarRight.x - 24f) < 0.1f,
+            "Left toolbar has the mirrored gap and does not overlap the list");
+        Check(Mathf.Abs(listLeft.y - toolbarRight.y) < 0.1f,
+            "Left toolbar stays aligned with the list's top edge");
+        Check(toolbarLeft.x >= body.rect.xMin + 29.9f && Mathf.Abs(view.Toolbar.rect.width - 290f) < 0.1f,
+            "Left toolbar retains its width and fits inside the menu with a margin");
+        T17Button method = view.Toolbar.GetChild(0).GetComponent<T17Button>();
+        T17Button direction = view.Toolbar.GetChild(1).GetComponent<T17Button>();
+        CheckRaycast(view.Menu.CachedEventSystem, method, "Left method control is reachable by the real UI raycaster");
+        CheckRaycast(view.Menu.CachedEventSystem, direction, "Left direction control is reachable by the real UI raycaster");
+        float width = Vector3.Distance(toolbarCorners[0], toolbarCorners[3]);
+        float gap = Vector3.Distance(toolbarCorners[2], listCorners[1]);
+        Vector3 savedScale = body.localScale;
+        try
+        {
+            body.localScale = savedScale * 0.8f;
+            Canvas.ForceUpdateCanvases();
+            view.Toolbar.GetWorldCorners(toolbarCorners);
+            view.Scroll.GetComponent<RectTransform>().GetWorldCorners(listCorners);
+            Check(Mathf.Abs(Vector3.Distance(toolbarCorners[0], toolbarCorners[3]) / width - 0.8f) < 0.001f
+                && Mathf.Abs(Vector3.Distance(toolbarCorners[2], listCorners[1]) / gap - 0.8f) < 0.001f,
+                "Left toolbar width and spacing follow the menu scaling");
+            CheckRaycast(view.Menu.CachedEventSystem, method, "Scaled left method control remains clickable");
+            CheckRaycast(view.Menu.CachedEventSystem, direction, "Scaled left direction control remains clickable");
+        }
+        finally { body.localScale = savedScale; Canvas.ForceUpdateCanvases(); }
     }
 
     private void CheckLevelOrder(MenuView view, LevelSetInfoSO set)

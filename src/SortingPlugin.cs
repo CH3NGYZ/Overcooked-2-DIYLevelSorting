@@ -9,7 +9,7 @@ using UnityEngine.SceneManagement;
 
 namespace OC2DIYLevelSorting
 {
-    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.2.0")]
+    [BepInPlugin(PluginGuid, "DIYLevel Sorting", "1.3.0")]
     [BepInDependency("dev.gua.overcooked.diylevel")]
     [BepInDependency("oc2.diylevel.fastinit", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInProcess("Overcooked2.exe")]

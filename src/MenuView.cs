@@ -173,6 +173,14 @@ namespace OC2DIYLevelSorting
                 end.x -= 124f;
                 nameRect.offsetMax = end;
             }
+            if (row.NameText != null)
+            {
+                // Native titles wrap and truncate vertically. Fit the complete
+                // name into the space left by the toolbar and pin control.
+                row.NameText.resizeTextMaxSize = row.NameText.fontSize;
+                row.NameText.resizeTextMinSize = Math.Min(12, row.NameText.fontSize);
+                row.NameText.resizeTextForBestFit = true;
+            }
             RefreshPin(row);
         }
 

@@ -13,7 +13,6 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using UnityEngine.SceneManagement;
-using System.Security.Cryptography;
 using DIYUI = OC2DIYLevel.UIUtils;
 
 // Test-only plugin, gated by the launcher environment; never included in the release DLL.
@@ -46,6 +45,20 @@ public sealed class UnityTests : BaseUnityPlugin
         mouseDelta.SetValue(input, 0f);
     }
     private static void FrontendMouseDisabled(FrontendRootMenu __instance) { DisablePhysicalMouse(__instance.CachedEventSystem); }
+    private static void DisableConfigurationManagerOverlay()
+    {
+        Type managerType = AccessTools.TypeByName("ConfigurationManager.ConfigurationManager");
+        if (managerType == null) return;
+        foreach (UnityEngine.Object candidate in Resources.FindObjectsOfTypeAll(managerType))
+        {
+            object instance = candidate;
+            PropertyInfo displaying = AccessTools.Property(managerType, "DisplayingWindow");
+            if (displaying != null && displaying.CanWrite) displaying.SetValue(instance, false, null);
+            FieldInfo overrideHotkey = AccessTools.Field(managerType, "OverrideHotkey");
+            if (overrideHotkey != null) overrideHotkey.SetValue(instance, true);
+            return;
+        }
+    }
     private static bool ObserveScene(string __0)
     {
         selectedScene = __0;
@@ -70,6 +83,7 @@ public sealed class UnityTests : BaseUnityPlugin
         kitchenReturn = Array.IndexOf(args, "-oc2SortingTestKitchenReturn") >= 0;
         roundEnd = Array.IndexOf(args, "-oc2SortingTestRoundEnd") >= 0;
         if (string.IsNullOrEmpty(output)) { enabled = false; return; }
+        DisableConfigurationManagerOverlay();
         harmony = new Harmony("oc2.diylevel.sorting.unitytests.observe");
         saveRoot = Path.Combine(output, "sandbox-saves");
         Directory.CreateDirectory(saveRoot);
@@ -456,10 +470,10 @@ public sealed class UnityTests : BaseUnityPlugin
         sets.Show(user, root, rootObject, false);
         yield return new WaitForSecondsRealtime(0.2f);
         // Append synthetic packages through the exact installed private button entry.
-        LevelSetInfoSO duplicateA = Fixture("Same Name", "shared_scene", "fixture-a");
-        LevelSetInfoSO duplicateB = Fixture("Same Name", "shared_scene", "fixture-b");
+        LevelSetInfoSO duplicateA = Fixture("Original Package Name With Spaces", "shared_scene", "fixture-a");
+        LevelSetInfoSO duplicateB = Fixture("Original Package Name With Spaces", "shared_scene", "fixture-b");
         LevelInfoSO second = ScriptableObject.CreateInstance<LevelInfoSO>();
-        second.levelName = second.levelNameZH = "Other Level";
+        second.levelName = second.levelNameZH = "Other Level With Spaces";
         second.sceneName = "OTHER_SCENE";
         duplicateB.levelInfos = new LevelInfoSO[] { duplicateB.levelInfos[0], second };
         string timeFixtureDirectory = Path.Combine(output, "time-fixture");
@@ -480,6 +494,12 @@ public sealed class UnityTests : BaseUnityPlugin
         MethodInfo addSet = AccessTools.Method(typeof(DIYLevelEntryUI), "AddLevelSetButton");
         T17Button aButton = (T17Button)addSet.Invoke(null, new object[] { duplicateA });
         T17Button bButton = (T17Button)addSet.Invoke(null, new object[] { duplicateB });
+        yield return new WaitForSecondsRealtime(0.2f);
+        setView.Scroll.ScrollToEntry(bButton.gameObject, false);
+        yield return new WaitForSecondsRealtime(0.2f);
+        CheckRenderedName(bButton.transform.Find("LevelSetName").GetComponent<T17Text>(),
+            DIYUI.GetLocalizedText(duplicateB.levelSetName, duplicateB.levelSetNameZH), "Visible package name with spaces", true);
+        ScreenCapture.CaptureScreenshot(Path.Combine(output, "package-name-fixture.png"));
         SortingPlugin.Instance.SetSort(0, false);
         yield return new WaitForSecondsRealtime(0.25f);
         Check(aButton.transform.parent == setView.Content && bButton.transform.parent == setView.Content, "Incremental entry path keeps both same-name buttons");
@@ -510,7 +530,22 @@ public sealed class UnityTests : BaseUnityPlugin
         Check(bButton != null, "Incremental deletion preserves surviving button objects");
         // Failure in the original onClick event cannot prevent the requested click history.
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
-        yield return null;
+        transition = WaitForMenuToSettle(levelView);
+        while (transition.MoveNext()) yield return transition.Current;
+        FrontendOptionsMenu nativeOptions = rootObject.transform.Find("FixedAspectRootCanvas/ScreenSpaceCanvas/GameOptions").GetComponent<FrontendOptionsMenu>();
+        T17Button nativeName = DIYUI.AddButton(nativeOptions, "DIYSorting_NameBaseline",
+            duplicateB.levelInfos[0].levelName, duplicateB.levelInfos[0].levelNameZH, delegate { });
+        LayoutRebuilder.ForceRebuildLayoutImmediate(nativeName.transform.parent as RectTransform);
+        T17Text nativeTitle = nativeName.transform.Find("Title").GetComponent<T17Text>();
+        Check(nativeTitle.rectTransform.rect.width > 0 && nativeTitle.rectTransform.rect.height > 0,
+            "Native title baseline uses a laid-out text rectangle");
+        CheckRenderedName(nativeTitle,
+            DIYUI.GetLocalizedText(duplicateB.levelInfos[0].levelName, duplicateB.levelInfos[0].levelNameZH), "Native original name with spaces", false);
+        UnityEngine.Object.DestroyImmediate(nativeName.gameObject);
+        foreach (LevelInfoSO level in duplicateB.levelInfos)
+            CheckRenderedName(levelView.Content.Find("Level_" + level.levelName).Find("Title").GetComponent<T17Text>(),
+                DIYUI.GetLocalizedText(level.levelName, level.levelNameZH), "Level name with spaces", true);
+        ScreenCapture.CaptureScreenshot(Path.Combine(output, "level-name-fixture.png"));
         Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, duplicateB.levelInfos[0]) == oldTime.Ticks,
             "A same-named scene reads the selected package's own file");
         Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, second) == oldTime.AddDays(10).Ticks,
@@ -524,7 +559,7 @@ public sealed class UnityTests : BaseUnityPlugin
         SortingPlugin.Instance.SetSort((int)SortMethod.AddedTime, false);
         SortingPlugin.Instance.SetSort((int)SortDirection.Ascending, true);
         CheckLevelOrder(levelView, duplicateB);
-        Check(levelView.Content.GetChild(0).name == "Level_Other Level", "Rebuilt rows sort by the refreshed file times");
+        Check(levelView.Content.GetChild(0).name == "Level_Other Level With Spaces", "Rebuilt rows sort by the refreshed file times");
         File.Delete(fixtureOtherScene);
         AccessTools.Method(typeof(DIYLevelEntryUI), "OnLevelSetSelected").Invoke(null, new object[] { duplicateB });
         Check(SortingPlugin.Instance.Metadata.GetLevelAddedTicks(duplicateB, second) == 0,
@@ -537,7 +572,7 @@ public sealed class UnityTests : BaseUnityPlugin
         SortingPlugin.Instance.SetSort((int)SortDirection.Descending, true);
         Check(levelView.Content.GetChild(0).name == tiedFirst, "Equal file times keep stable identity order across directions");
         CheckLevelOrder(levelView, duplicateB);
-        T17Button failing = levels.GetComponent<MenuView>().Content.Find("Level_Same Name").GetComponent<T17Button>();
+        T17Button failing = levels.GetComponent<MenuView>().Content.Find("Level_" + duplicateB.levelInfos[0].levelName).GetComponent<T17Button>();
         // This fixture deliberately removes the appended history listener: only the
         // production Press prefix can record a click before the first handler throws.
         failing.onClick = new Button.ButtonClickedEvent();
@@ -708,10 +743,70 @@ public sealed class UnityTests : BaseUnityPlugin
         }
     }
 
+    private void CheckRenderedName(T17Text text, string expected, string message, bool requireVisible)
+    {
+        Check(text != null && text.text == expected, message + ": original full name is retained");
+        RectTransform viewport = null;
+        if (requireVisible)
+        {
+            Check(text.gameObject.activeInHierarchy, message + ": name is in the visible menu");
+            viewport = text.GetComponentInParent<T17Button>().transform.parent.parent as RectTransform;
+            Vector3[] textCorners = new Vector3[4];
+            Vector3[] viewportCorners = new Vector3[4];
+            text.rectTransform.GetWorldCorners(textCorners);
+            viewport.GetWorldCorners(viewportCorners);
+            Check(Mathf.Min(textCorners[3].x, viewportCorners[3].x) > Mathf.Max(textCorners[0].x, viewportCorners[0].x),
+                message + ": title intersects the visible list area");
+            Check(Mathf.Min(textCorners[1].y, viewportCorners[1].y) > Mathf.Max(textCorners[0].y, viewportCorners[0].y),
+                message + ": title intersects the visible list height");
+            RectTransform pin = text.GetComponentInParent<T17Button>().transform.Find("DIYSorting_Pin") as RectTransform;
+            if (pin != null)
+            {
+                Vector3[] pinCorners = new Vector3[4];
+                pin.GetWorldCorners(pinCorners);
+                Check(textCorners[3].x <= pinCorners[0].x, message + ": title does not overlap its pin button");
+            }
+        }
+        using (TextGenerator generator = new TextGenerator())
+        {
+            Check(generator.Populate(text.text, text.GetGenerationSettings(text.rectTransform.rect.size)),
+                message + ": real Unity text generation succeeds");
+            Logger.LogInfo("Name rendering: text=" + text.text + ", rect=" + text.rectTransform.rect.size
+                + ", font=" + text.fontSize + ", bestFit=" + text.resizeTextForBestFit
+                + ", horizontal=" + text.horizontalOverflow + ", vertical=" + text.verticalOverflow
+                + ", lines=" + generator.lineCount + ", visible=" + generator.characterCountVisible);
+            Check(generator.characterCountVisible == expected.Length,
+                message + ": all characters after spaces are rendered (" + generator.characterCountVisible + "/" + expected.Length + ")");
+            if (requireVisible)
+            {
+                bool insideTitle = true;
+                bool insideViewport = true;
+                IList<UIVertex> vertices = generator.verts;
+                // Unity's Text mesh converts generated positions by pixelsPerUnit
+                // and omits the final empty quad. Compare in the actual UI spaces.
+                for (int i = 0; i < vertices.Count - 4; i++)
+                {
+                    Vector3 local = vertices[i].position / text.pixelsPerUnit;
+                    Rect titleRect = text.rectTransform.rect;
+                    insideTitle &= local.x >= titleRect.xMin - 1f && local.x <= titleRect.xMax + 1f
+                        && local.y >= titleRect.yMin - 1f && local.y <= titleRect.yMax + 1f;
+                    Vector3 visible = viewport.InverseTransformPoint(text.rectTransform.TransformPoint(local));
+                    Rect visibleRect = viewport.rect;
+                    insideViewport &= visible.x >= visibleRect.xMin - 1f && visible.x <= visibleRect.xMax + 1f
+                        && visible.y >= visibleRect.yMin - 1f && visible.y <= visibleRect.yMax + 1f;
+                }
+                Check(insideTitle, message + ": every generated glyph stays inside the title rectangle");
+                Check(insideViewport, message + ": every generated glyph stays inside the visible viewport");
+            }
+        }
+    }
+
     private static string FileHash(string path)
     {
         if (!File.Exists(path)) return null;
-        using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path)));
+        System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create();
+        try { return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path))); }
+        finally { ((IDisposable)sha).Dispose(); }
     }
 
     private static List<KeyValuePair<T17Button, string>> LevelPinRows(MenuView view, LevelSetInfoSO set)

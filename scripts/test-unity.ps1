@@ -6,6 +6,14 @@ param(
     [switch]$WithRoundEnd
 )
 $ErrorActionPreference = 'Stop'
+# Some test launches use the bundled Windows PowerShell runtime without its
+# default utility module being imported. Keep hashing deterministic and local.
+function Get-Sha256([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '')) }
+    finally { $sha.Dispose() }
+}
 if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A player game is running; close it before running Unity tests.' }
 & (Join-Path $PSScriptRoot 'build.ps1') -GameRoot $GameRoot -MSBuild $MSBuild
 & $MSBuild (Join-Path $PSScriptRoot '..\tests\UnityTests.csproj') /t:Rebuild "/p:GameRoot=$GameRoot" /p:PreBuildEvent= /p:PostBuildEvent= /v:minimal /nologo
@@ -36,8 +44,8 @@ foreach ($target in $targets) {
     $hash = $null
     if ($exists) {
         Copy-Item -LiteralPath $target -Destination $backup
-        $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-        if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne $hash) { throw "Backup mismatch: $target" }
+        $hash = Get-Sha256 $target
+        if ((Get-Sha256 $backup) -ne $hash) { throw "Backup mismatch: $target" }
     }
     $manifest += [pscustomobject]@{ Target = $target; Existed = $exists; Backup = $backup; Hash = $hash }
 }
@@ -51,14 +59,30 @@ $fastHash = $null
 try {
     # Check again immediately before temporary deployment.
     if (Get-Process -Name Overcooked2 -ErrorAction SilentlyContinue) { throw 'A game started during test preparation.' }
+    # Start from deterministic sorting state; all temporary config writes belong
+    # inside the try so even a failed write runs the manifest restoration.
+@"
+[Sorting]
+Method = Name
+Direction = Ascending
+
+[History]
+ClickedLevels =
+
+[Pinning]
+PinnedEntries =
+
+[Navigation]
+ReturnToLevelList = true
+"@ | Set-Content -LiteralPath $targets[2] -Encoding UTF8
     Copy-Item -LiteralPath (Join-Path $workspace 'bin\Release\OC2DIYLevelSorting.dll') -Destination $targets[0]
     Copy-Item -LiteralPath (Join-Path $workspace 'bin\UnityTests\OC2DIYLevelSorting.UnityTests.dll') -Destination $targets[1]
     [pscustomobject]@{
         Version = [Reflection.AssemblyName]::GetAssemblyName($targets[0]).Version.ToString()
-        SHA256 = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
+        SHA256 = Get-Sha256 $targets[0]
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDirectory 'plugin-artifact.json')
     if ($WithoutFastInit -and (Test-Path -LiteralPath $fastPath)) {
-        $fastHash = (Get-FileHash -LiteralPath $fastPath).Hash
+        $fastHash = Get-Sha256 $fastPath
         Move-Item -LiteralPath $fastPath -Destination $fastBackup
         $fastMoved = $true
     }
@@ -99,7 +123,7 @@ try {
     if (Test-Path -LiteralPath $saveManifest) {
         foreach ($line in Get-Content -LiteralPath $saveManifest) {
             $parts = $line.Split(@("`t"), 2, [StringSplitOptions]::None)
-            $actual = if (Test-Path -LiteralPath $parts[1]) { (Get-FileHash -LiteralPath $parts[1]).Hash } else { '-' }
+            $actual = if (Test-Path -LiteralPath $parts[1]) { Get-Sha256 $parts[1] } else { '-' }
             if ($actual -ne $parts[0]) { throw 'An original save changed during the isolated Unity test; see save-manifest.tsv.' }
         }
         Write-Output 'Original save hashes unchanged after test process exit.'
@@ -111,40 +135,60 @@ try {
     if (-not $result.StartsWith('PASS:')) { throw "Unity tests failed. Evidence: $runDirectory" }
 }
 finally {
+    $restoreErrors = New-Object 'System.Collections.Generic.List[string]'
     # Only terminate the exact process launched by this script, never another player game.
-    if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { Stop-Process -Id $gameProcess.Id; $gameProcess.WaitForExit() }
-    $remainingOwned = Get-CimInstance Win32_Process -Filter "Name = 'Overcooked2.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($runDirectory) }
-    foreach ($owned in $remainingOwned) {
-        Stop-Process -Id $owned.ProcessId
-        Wait-Process -Id $owned.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
-    }
+    try {
+        if ($null -ne $gameProcess -and -not $gameProcess.HasExited) { Stop-Process -Id $gameProcess.Id; $gameProcess.WaitForExit() }
+        $remainingOwned = Get-CimInstance Win32_Process -Filter "Name = 'Overcooked2.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($runDirectory) }
+        foreach ($owned in $remainingOwned) {
+            Stop-Process -Id $owned.ProcessId
+            Wait-Process -Id $owned.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+        }
+    } catch { $restoreErrors.Add("process cleanup: $($_.Exception.Message)") }
     $env:OC2_SORTING_TEST_OUTPUT = $previousOutput
-    if (Test-Path -LiteralPath $targets[4]) { Copy-Item -LiteralPath $targets[4] -Destination (Join-Path $runDirectory 'bepinex.log') }
+    try {
+        if (Test-Path -LiteralPath $targets[4]) { Copy-Item -LiteralPath $targets[4] -Destination (Join-Path $runDirectory 'bepinex.log') }
+    } catch { $restoreErrors.Add("log capture: $($_.Exception.Message)") }
     if ($fastMoved) {
-        if (Test-Path -LiteralPath $fastPath) {
-            if ((Get-FileHash -LiteralPath $fastPath).Hash -ne $fastHash) {
-                # A user or updater may have installed a replacement while the
-                # original DLL was out of the directory. Preserve both versions
-                # and still restore every temporary sorting/config/log change.
-                Write-Warning "FastInit was replaced during the test; keeping the replacement and original backup at $fastBackup"
+        try {
+            if (Test-Path -LiteralPath $fastPath) {
+                if ((Get-Sha256 $fastPath) -ne $fastHash) {
+                    # A user or updater may have installed a replacement while the
+                    # original DLL was out of the directory. Preserve both versions
+                    # and still restore every temporary sorting/config/log change.
+                    Write-Warning "FastInit was replaced during the test; keeping the replacement and original backup at $fastBackup"
+                }
             }
-        }
-        else {
-            Move-Item -LiteralPath $fastBackup -Destination $fastPath
-            if ((Get-FileHash -LiteralPath $fastPath).Hash -ne $fastHash) { throw 'FastInit restore hash mismatch.' }
-        }
+            else {
+                Move-Item -LiteralPath $fastBackup -Destination $fastPath
+                if ((Get-Sha256 $fastPath) -ne $fastHash) { throw 'FastInit restore hash mismatch.' }
+            }
+        } catch { $restoreErrors.Add("FastInit restore: $($_.Exception.Message)") }
     }
     foreach ($entry in $manifest) {
-        if ($entry.Existed) {
-            Copy-Item -LiteralPath $entry.Backup -Destination $entry.Target
-            if ((Get-FileHash -LiteralPath $entry.Target).Hash -ne $entry.Hash) { throw "Restore mismatch: $($entry.Target)" }
-        }
-        elseif (Test-Path -LiteralPath $entry.Target) {
-            for ($attempt = 0; $attempt -lt 10; $attempt++) {
-                try { Remove-Item -LiteralPath $entry.Target; break }
-                catch { if ($attempt -eq 9) { throw }; Start-Sleep -Milliseconds 500 }
+        try {
+            if ($entry.Existed) {
+                for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                    try {
+                        if ((Get-Sha256 $entry.Target) -ne $entry.Hash) {
+                            Copy-Item -LiteralPath $entry.Backup -Destination $entry.Target
+                        }
+                        if ((Get-Sha256 $entry.Target) -ne $entry.Hash) { throw "Restore mismatch: $($entry.Target)" }
+                        break
+                    }
+                    catch { if ($attempt -eq 9) { throw }; Start-Sleep -Milliseconds 500 }
+                }
             }
-        }
+            elseif (Test-Path -LiteralPath $entry.Target) {
+                for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                    try { Remove-Item -LiteralPath $entry.Target; break }
+                    catch { if ($attempt -eq 9) { throw }; Start-Sleep -Milliseconds 500 }
+                }
+            }
+        } catch { $restoreErrors.Add("restore $($entry.Target): $($_.Exception.Message)") }
+    }
+    if ($restoreErrors.Count -gt 0) {
+        throw ('Temporary test state restoration failed: ' + ($restoreErrors -join ' | '))
     }
     Write-Output "Original DLL/config/log state restored. Evidence: $runDirectory"
 }
